@@ -7,7 +7,7 @@
 #        AUTHOR: Ashley Tehranchi, tehranchi576@gmail.com
 #  ORGANIZATION: Stanford University
 #       CREATED: 2015-12-12 11:33
-# Last modified: 2017-10-09 11:30
+# Last modified: 2017-11-06 12:31
 #
 #
 #==============================================================================
@@ -77,6 +77,7 @@ def postcalc(prefix_name, trial_depths, allelesFileName):
 
     pileup_dictionary = {}
     count = 1
+    bad = 0
     outfile = open(outfilename, 'w')
     with open(infilename, 'r') as pileup:
         for line in pileup:
@@ -129,10 +130,20 @@ def postcalc(prefix_name, trial_depths, allelesFileName):
                         if (float(rows[3]) > depth) and ((float(REFdepth) / float(rows[3])) >= 0) :    ## depth greater than 0 and postfreq > 0
                             RefFreq = str(REFdepth / float(rows[3]))            # to get ref freq, totaldepth - altdepth = refdepth / totaldepth
                             AltFreq = str(1 - float(RefFreq))
-            pileup_dictionary[rows[0] + "." + rows[1]] = rows[2:] + [Acount, Ccount, Gcount, Tcount, ALTdepth, REFdepth, ALTallele, RefFreq, AltFreq]
+            if not len(rows) == 6:
+                bad += 1
+                continue
+
+            pileup_dictionary[rows[0] + "." + rows[1]] = (
+                rows[2:] + [
+                    Acount, Ccount, Gcount, Tcount, ALTdepth,
+                    REFdepth, ALTallele, RefFreq, AltFreq
+                ]
+            )
             #print("ALTallele, row ",ALTallele, rows)
             assert len(pileup_dictionary[rows[0] + "." + rows[1]]) == 13
     linecounter =1
+    print('{} mpileup rows were too short and thus skipped'.format(bad))
     with open(inalleles) as alleles:
         for line in alleles:
             row = line.rstrip().split('\t')
@@ -250,18 +261,26 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
     print("Writing", prefix_name+"geno.txt")
     genos.to_csv(prefix_name+"geno.txt", sep='\t')
     print("Done")
-    print("Transposing")
-    genos = genos.drop(genos.columns[:4], axis=1)
-    trans = genos.T
-    #  print("Writing", prefix_name+"transpose.txt")
-    #  trans.to_csv(prefix_name+"transpose.txt", sep='\t')
-    #  print("Done")
-
     print("Filtering by individual")
+    geno_len = len(genos)
+    genos = genos[list(indv_list)]
+    assert len(genos.columns) == len(indv_list)
+    genos = genos.dropna()
+    final_len = len(genos)
+    print('Dropped {} duplicates, writing {} lines to transpose'
+          .format(geno_len-final_len, final_len))
+    print("Transposing")
+    trans = genos.T
+    print("Writing", prefix_name+"transpose.txt")
+    trans.to_csv(prefix_name+"transpose.txt", sep='\t')
+    print("Done")
+
+    print('Final filter')
     trans = trans[trans.index.to_series().isin(indv_list)]
     trans['sort'] = trans.index.to_series().map(sidx)
     trans = trans.sort_values('sort')
     trans = trans.drop('sort', axis=1)
+    trans = trans.astype(int)
     print("Writing numeric matrix:", outName)
     trans.to_csv(outName, sep='\t', header=False, index=False)
     print("Done")
@@ -277,7 +296,10 @@ def regPVAL(prefix_name, trial_depths, numIndv):
     postdataIN = new_prefix + ".POSTth.txt"
     genosoutName = new_prefix + ".genotypes.txt"
     ### make sure location of R script is correct
-    commandLine = "sed -e 's!postdataIN!" + postdataIN + "!g'" + " regression_qtls.R | sed -e 's!genosoutName!" + genosoutName + "!g' | sed -e 's!prefix!" + new_prefix + "!g' | sed -e 's!numIndiv!" + numIndv + "!g'> " +prefix_name+ "1.R"
+    orig_r = os.path.join(os.path.dirname(__file__), 'regression_qtls.R')
+    if not os.path.isfile(orig_r):
+        raise OSError('File not found: {}'.format(orig_r))
+    commandLine = "sed -e 's!postdataIN!" + postdataIN + "!g' " + orig_r + " | sed -e 's!genosoutName!" + genosoutName + "!g' | sed -e 's!prefix!" + new_prefix + "!g' | sed -e 's!numIndiv!" + numIndv + "!g'> " + prefix_name + "1.R"
     print(commandLine)
     subprocess.check_call(commandLine, shell=True)
     commandout = "Rscript " +prefix_name+ "1.R"
@@ -285,7 +307,7 @@ def regPVAL(prefix_name, trial_depths, numIndv):
     subprocess.check_call(commandout, shell=True)
     os.system("rm " +prefix_name+ "1.R")
     print("regression DONE")
-    return()
+    return
 
 
 ##################

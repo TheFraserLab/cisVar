@@ -3,38 +3,102 @@
 """
 Convert a bed file into an alleles file.
 """
+import os as _os
 import sys as _sys
 import bz2 as _bz2
 import gzip as _gzip
 import argparse as _argparse
 
+try:
+    import fyrd
+    print('Using fyrd, cores ignored')
+except ImportError:
+    print('Using multiprocessing')
+    import multiprocessing as mp
+    fyrd = False
 
-def bed_to_alleles(mpileup_file, bed_file, allele_file):
-    """Convert a bed file into an alleles file.
 
+def make_alleles(mpileup_file, vcf_files, allele_file, cores=1):
+    """Use VCF files plus the mpileup file to make alleles file.
+
+    Note: We only use the mpileup file to limit the data in the vcf files.
     Arguments should be writable files or file names
     """
+    if isinstance(vcf_files, str):
+        vcf_files = [vcf_files]
+    else:
+        vcf_files = list(vcf_files)
+    if not fyrd:
+        pool = mp.Pool(cores)
+    jobs = {}
+    for vcf in vcf_files:
+        if fyrd:
+            jobs[vcf] = fyrd.submit(
+
+                get_vcf, (vcf,),
+                mem='12GB', time='04:00:00',
+                syspaths=[_os.path.dirname(_os.path.abspath(__file__))],
+                imports=[
+                    'from make_alleles import *',
+                    'from make_alleles import open_zipped'
+                ]
+            )
+        else:
+            jobs[vcf] = pool.apply_async(get_vcf, (vcf,))
+
     all_loci = {}
-    with open_zipped(bed_file) as fin:
-        for line in fin:
-            fields = line.strip().split('\t')
-            if fields[0] not in all_loci:
-                all_loci[fields[0]] = {}
-            all_loci[fields[0]][fields[2]] = (fields[5], fields[6])
+    if fyrd:
+        fyrd.wait(jobs.values())
+
+    all_loci = {}
+    for vcf, job in jobs.items():
+        print('Getting', vcf)
+        out = job.get()
+        all_loci.update(out)
+
+    other = {}
+    for k, v in all_loci.items():
+        other[flip_chrom(k)] = v
+    all_loci.update(other)
 
     with open_zipped(mpileup_file) as fin, open_zipped(allele_file, 'w') as fout:
         for line in fin:
             fields = line.strip().split('\t')
+            ref, alt = all_loci[fields[0]][fields[1]]
+            if len(ref) > 1 or len(alt) > 1:
+                continue
             fout.write(
-                '{}\t{}\t{}\n'.format(
+                '{}\t{}\t{}\t{}\n'.format(
                     fields[0],
                     fields[1],
-                    '\t'.join(
-                        all_loci[fields[0]][fields[1]]
-                    )
+                    ref,
+                    alt
                 )
             )
     return 0
+
+
+def get_vcf(vcf):
+    """Convert a vcf file to a dict of 'chr'->'pos'->(ref, alt)
+    """
+    all_loci = {}
+    with open_zipped(vcf) as fin:
+        for line in fin:
+            if line.startswith('#'):
+                continue
+            fields = line.strip().split('\t')
+            if fields[0] not in all_loci:
+                all_loci[fields[0]] = {}
+            all_loci[fields[0]][fields[1]] = (fields[3], fields[4])
+    return all_loci
+
+
+def flip_chrom(x):
+    """Return alternate chromosome formatting."""
+    if x.startswith('chr'):
+        return x[3:]
+    else:
+        return 'chr{}'.format(x)
 
 
 def open_zipped(infile, mode='r'):
@@ -72,21 +136,23 @@ def main(argv=None):
     )
 
     # Optional arguments
+    parser.add_argument('-c', '--cores', default=1,
+                        help='Number of cores to use')
+
     parser.add_argument('mpileup',
                         help='The M-pileup file to match')
 
     # Optional files
-    parser.add_argument('bedfile', nargs='?',
-                        help="Input file (Default: STDIN)")
     parser.add_argument('allele_file', nargs='?',
                         help="Output file (Default: STDOUT)")
+    parser.add_argument('vcf_files', nargs='+',
+                        help="VCF Files")
 
     args = parser.parse_args(argv)
 
-    ifl = args.bedfile if args.bedfile else _sys.stdin
     ofl = args.allele_file if args.allele_file else _sys.stdout
 
-    return bed_to_alleles(args.mpileup, ifl, ofl)
+    return make_alleles(args.mpileup, args.vcf_files, ofl, args.cores)
 
 if __name__ == '__main__' and '__file__' in globals():
     _sys.exit(main())

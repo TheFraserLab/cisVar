@@ -1,37 +1,44 @@
-#!/usr/bin/python3
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+script removes duplicates and filters out unmapped reads
 
-##################################################################################
-# ADAPTED FROM EILON SHARON, https://github.com/eilon-s/bioinfo_scripts/rmdup.py
-# script removes duplicates and filters out unmapped reads
-##################################################################################
+Written by Eilon Sharon:
+    `https://github.com/eilon-s/bioinfo_scripts/blob/master/rmdup.py`_
+"""
 
-import sys, os, subprocess
+import os
+import sys
+import random
 import argparse
 
 import pysam
-import gzip
-import array
-import random
-
 import psutil
 
+
 class SlimRead:
-	def __init__(self, read, line_num):
-		self.line_num = line_num
-		self.tid = read.tid
-		self.reference_start = read.reference_start
-		self.reference_end = read.reference_end
+
+    """
+    Simple class to hold read information.
+    """
+
+    def __init__(self, read, line_num):
+        self.line_num = line_num
+        self.tid = read.tid
+        self.reference_start = read.reference_start
+        self.reference_end = read.reference_end
+
 
 def memory_usage_psutil():
-    # return the memory usage in MB
-    
+    """Return the memory usage in MB."""
     process = psutil.Process(os.getpid())
-    mem = process.get_memory_info()[0] / float(2 ** 20)
+    mem = process.memory_info()[0]/float(2 ** 20)
     return mem
-  
-#@profile
-def rmdup_pe(in_bam_file_name,out_bam_file_name,do_rand_quality):
-  
+
+
+def rmdup_pe(in_bam_file_name, out_bam_file_name):
+    """Paired end duplicate removal."""
+
     sys.stderr.write("Running in paired-ends mode\n")
     in_bamfile = pysam.AlignmentFile(in_bam_file_name,"rb")
 
@@ -61,45 +68,48 @@ def rmdup_pe(in_bam_file_name,out_bam_file_name,do_rand_quality):
                     if len(reads_dict[cur_read_key]) == 1:
                     # saving the line of the read for memory efficiency
                         reads_dict[cur_read_key].append(SlimRead(read,r))
-                        
+
                         # found a pair -> add id to the uniq set
                         cur_first_read = reads_dict[cur_read_key][0]
                         cur_second_read = reads_dict[cur_read_key][1]
-                        
+
                         #print("found a pair\n%s\n%s\n" % (cur_first_read, cur_second_read) )
                         #sys.stderr.write("found a pair: %s" % read.qname)
-                        
+
                         if (cur_first_read.tid != cur_first_read.tid):
-                            sys.stderr.write("Removing pairs that are mapped to two different reference sequences (chromosomes)")
+                            sys.stderr.write(
+                                "Removing pairs that are mapped to two "
+                                "different reference sequences (chromosomes)"
+                            )
                             continue
 
                         # converting reference id to chr for the output to be sorted
                         cur_pair_key_str = (str(chr(65+cur_first_read.tid)) + "_" + str(chr(65+cur_second_read.tid)) + "_" +
                         str(min(cur_first_read.reference_start,cur_first_read.reference_end, cur_second_read.reference_start,cur_second_read.reference_end)) + "_" +
                         str(max(cur_first_read.reference_start,cur_first_read.reference_end, cur_second_read.reference_start,cur_second_read.reference_end)))
-                        
+
                         cur_pair_key = cur_pair_key_str.__hash__()
-                        
+
                         #sys.stderr.write("%s\n" % cur_pair_key)
-                        
+
                         # replacing the dictionary entry by just the line numbers
                         reads_dict[cur_read_key] = [cur_first_read.line_num, cur_second_read.line_num]
-                        
+
                         #sys.stderr.write("Read pair position key: %s" % cur_pair_key)
-                        
+
                         #if (cur_pair_key == "0_0_1472172_1472342"):
                         #  print("found a pair\n%s\n%s\n" % (cur_first_read, cur_second_read) )
-                        
+
                         # adding to the dictionary of unique pairs
                         if cur_pair_key in uniq_reads_corr_dict:
                         #sys.stderr.write("-----in dict: %s, %s" % (cur_pair_key,read.qname) )
                             uniq_reads_corr_dict[cur_pair_key].append(cur_read_key)
-                        
+
                         else:
                         #sys.stderr.write("not in dict: %s, %s" % (cur_pair_key,read.qname))
                             uniq_reads_corr_dict[cur_pair_key] = [cur_read_key]
-                        
-                        # 
+
+                        #
                         #uniq_reads_corr_dict[]
                     else: # more than 2 rreads with the same id? error!
                         raise Exception("More than two reads with the same id: %s\n" % read)
@@ -107,21 +117,22 @@ def rmdup_pe(in_bam_file_name,out_bam_file_name,do_rand_quality):
                     #sys.stderr.write("Adding first read: %s\n" % read.qname)
                     # saving the line of the read for memory efficiency
                     reads_dict[cur_read_key] = [SlimRead(read,r)]
-                
+
             else:
                 continue
 
         else:
             sys.stderr.write("Found a single end read: %s\n" % read)
-            #print read
-            #print("YYYYYYYYYYYYYYYYY")
-            
-        
+
     in_bamfile.close()
-    
-  
-  # implemented for pair ends
-    sys.stderr.write("Found %d uniq reads pairs (%d reads), memory: %dMB\n" % (len(uniq_reads_corr_dict),len(uniq_reads_corr_dict)*2, memory_usage_psutil()))
+
+    # implemented for pair ends
+    sys.stderr.write(
+        "Found {} uniq reads pairs ({} reads), memory: {}MB\n".format(
+            len(uniq_reads_corr_dict), len(uniq_reads_corr_dict)*2,
+            memory_usage_psutil()
+        )
+    )
     sys.stderr.write("Looking for duplicates...\n")
 
     max_num_of_dupliactes = 0
@@ -129,7 +140,7 @@ def rmdup_pe(in_bam_file_name,out_bam_file_name,do_rand_quality):
 
     out_reads_line_numbers = []
 
-    for uniq_pos,pairs_ids in sorted(uniq_reads_corr_dict.items()):
+    for uniq_pos, pairs_ids in sorted(uniq_reads_corr_dict.items()):
         cur_num_pairs = len(pairs_ids)
         if (cur_num_pairs>1):
             cnt_dup_pos += 1
@@ -150,14 +161,18 @@ def rmdup_pe(in_bam_file_name,out_bam_file_name,do_rand_quality):
     # sorting the reads
     out_reads_line_numbers.sort()
 
-    sys.stderr.write("Found %d duplicated segments in %d uniq segments (%f), max  #duplictaes: %d" % (cnt_dup_pos,len(uniq_reads_corr_dict),(1.0*cnt_dup_pos)/len(uniq_reads_corr_dict),max_num_of_dupliactes) )
+    sys.stderr.write(
+        "Found {} duplicated segments in {} uniq segments ({:.2f}), max  #duplictaes: {}"
+        .format(cnt_dup_pos, len(uniq_reads_corr_dict),
+               (1.0*cnt_dup_pos)/len(uniq_reads_corr_dict),
+               max_num_of_dupliactes)
+    )
 
     # printing the output bam
-    in_bamfile = pysam.AlignmentFile(in_bam_file_name,"rb")
+    in_bamfile  = pysam.AlignmentFile(in_bam_file_name,"rb")
     out_bamfile = pysam.AlignmentFile(out_bam_file_name, "wb", template=in_bamfile)
 
     sys.stderr.write("Writing output bam file...\n")
-
 
     out_ind=0
     r=0
@@ -171,11 +186,20 @@ def rmdup_pe(in_bam_file_name,out_bam_file_name,do_rand_quality):
             if (out_ind >= len(out_reads_line_numbers)):
                 break
         else:
-            sys.stderr.write("Error bug in printing the out file %d,%d,%d\n" % (r,out_ind,out_reads_line_numbers[out_ind]))
-            exit()
+            sys.stderr.write(
+                "Error bug in printing the out file {},{},{}\n".format(
+                    r, out_ind, out_reads_line_numbers[out_ind]
+                )
+            )
+            sys.exit(1)
 
         if (r % 1000000 == 0):
-            sys.stderr.write("writing. going over read %d , printed %d reads memroy: %dMB\n" % (r,out_ind,memory_usage_psutil()))
+            sys.stderr.write(
+                "writing. going over read {}, printed {} reads memory: {}MB\n"
+                .format(
+                    r, out_ind, memory_usage_psutil()
+                )
+            )
 
     out_bamfile.close()
     in_bamfile.close()
@@ -183,10 +207,12 @@ def rmdup_pe(in_bam_file_name,out_bam_file_name,do_rand_quality):
     # writing a single random pair from each unique position
     sys.stderr.write("Finish writing to output file: %s" % (out_bam_file_name) )
 
-def rmdup_se(in_bam_file_name,out_bam_file_name,do_rand_quality):
+
+def rmdup_se(in_bam_file_name, out_bam_file_name):
+    """Single eng duplicate removal."""
 
     sys.stderr.write("Running in single end mode\n")
-    in_bamfile = pysam.AlignmentFile(in_bam_file_name,"rb")
+    in_bamfile  = pysam.AlignmentFile(in_bam_file_name,"rb")
     out_bamfile = pysam.AlignmentFile(out_bam_file_name, "wb", template=in_bamfile)
 
     # build hash of read pairs and uniq position reads pairs
@@ -203,7 +229,6 @@ def rmdup_se(in_bam_file_name,out_bam_file_name,do_rand_quality):
 
         # converting reference id to chr for the ourput to be sorted
         cur_pair_key = str(chr(65+read.tid)) + "_" + str(read.tid) + "_" + str(min(read.reference_start,read.reference_end)) + "_" + str(max(read.reference_start,read.reference_end))
-
 
         # adding to the dictionary of unique pairs
         if cur_pair_key in uniq_reads_corr_dict:
@@ -232,40 +257,52 @@ def rmdup_se(in_bam_file_name,out_bam_file_name,do_rand_quality):
         out_bamfile.write(cur_read)
 
         # writing a single random pair from each unique position
-        sys.stderr.write("Finished! found %d duplicated segments in %d uniq segments (%f), max  #duplictaes: %d" % (cnt_dup_pos,len(uniq_reads_corr_dict),(1.0*cnt_dup_pos)/len(uniq_reads_corr_dict),max_num_of_dupliactes) )
+        sys.stderr.write(
+            "Finished! found {} duplicated segments in {} uniq segments ({:.2f}), max #duplictaes: {}"
+            .format(
+                cnt_dup_pos, len(uniq_reads_corr_dict),
+                (1.0*cnt_dup_pos)/len(uniq_reads_corr_dict),
+                max_num_of_dupliactes
+            )
+        )
 
         out_bamfile.close()
         in_bamfile.close()
 
-def main():
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-r", action='store_true', dest='do_rand_quality', default=False)
-    parser.add_argument("-p", action='store_true', dest='is_paired_ends', default=False)
-    parser.add_argument("in_bam_file", action='store')
-    parser.add_argument("out_bam_file", action='store')
+def main():
+    """Run as a script."""
+    parser = argparse.ArgumentParser(
+        "Identifies duplicated reads and select one (pair) randomly"
+    )
+    parser.add_argument("-p", action='store_true', dest='is_paired_ends',
+                        help="Treat reads as paired")
+    parser.add_argument("in_bam_file")
+    parser.add_argument("out_bam_file")
 
     options = parser.parse_args()
-    in_bam_file_name = options.in_bam_file
+    in_bam_file_name  = options.in_bam_file
     out_bam_file_name = options.out_bam_file
 
+    # If randomize quality scores such that samtools will select a random pair
+    # and not the highest score notice that this will make the quality scores
+    # in downstream analysis random
 
-    # if randomize quality scores such that samtools will select a random pair and not the highest score
-    # notice that this will make the quality scores in downstream analysis random
+    #  sys.stderr.write(
+        #  "Warning: the -r flag is not implemented, the selection is "
+        #  "random - i.e. quality independent\n"
+    #  )
 
-    sys.stderr.write("Warnning: the -r flag is not implemented, the selection is random - i.e. quality independent\n")
-
-
-    if (options.is_paired_ends):
-    	for chrom in 
-        rmdup_pe(in_bam_file_name,out_bam_file_name,options.do_rand_quality)
+    if options.is_paired_ends:
+        rmdup_pe(
+            in_bam_file_name, out_bam_file_name
+        )
     else:
-    # TODO - implement memory efficient version
-        rmdup_se(in_bam_file_name,out_bam_file_name,options.do_rand_quality)
-    #sys.stderr.write('TODO - not implemented\n')
-    #raise Exception('Not implemented')
-    sys.stderr.write("\nDone!\n")
+        rmdup_se(
+            in_bam_file_name, out_bam_file_name
+        )
 
+    sys.stderr.write("\nDone!\n")
 
 if __name__ == '__main__':
     main()
