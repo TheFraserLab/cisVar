@@ -19,8 +19,12 @@ import bz2 as _bz2
 import gzip as _gzip
 import subprocess as _sub
 import argparse as _argparse
+import multiprocessing as _mp
 
-import fyrd
+try:
+    import fyrd
+except ImportError:
+    fyrd = None
 
 
 EXPECTED_HEADER = [
@@ -28,14 +32,20 @@ EXPECTED_HEADER = [
 ]
 
 
-def geno_file(vcf, check_header=None, ind_list=None,
+def get_inds(indfile):
+    """Return a list of individuals from a newline separated file of IDs."""
+    with _open_zipped(indfile) as fin:
+        return fin.read().strip().split('\n')
+
+
+def geno_file(infile, check_header=None, ind_list=None,
               get_header=False, get_inds=False, log=_sys.stderr):
     """Wrapper for genotype files, currently only vcf
 
     Parameters
     ----------
-    vcf : str
-        Path to a vcf file, can be gzipped
+    infile : str
+        Path to a vcf or bed file, can be gzipped
     check_header : list, optional
         If a list is provided, assert that header matches before iterating.
     ind_list : list of str, optional
@@ -53,11 +63,15 @@ def geno_file(vcf, check_header=None, ind_list=None,
     alt : str
     inds : list of str
     """
-    name = vcf.split('.')
+    name = infile.split('.')
     if 'vcf' in name[-2:]:
-        return vcf_file(vcf, check_header, ind_list, get_header, get_inds, log)
+        return vcf_file(infile, check_header, ind_list, get_header, get_inds, log)
+    if 'bed' in name[-2:]:
+        return bed_file(infile, check_header, ind_list, get_header, get_inds, log)
     else:
-        raise NotImplementedError('Currently only VCFs supported')
+        raise NotImplementedError(
+            'Currently only VCFs and BEDs supported, filetype required in name'
+        )
 
 
 def vcf_file(vcf, check_header=None, ind_list=None,
@@ -93,8 +107,8 @@ def vcf_file(vcf, check_header=None, ind_list=None,
         while True:
             if not line.startswith('#'):
                 break
-            pos    = fin.tell()
             header = line
+            pos    = fin.tell()
             line   = fin.readline()
 
     # Get genotype location
@@ -110,8 +124,8 @@ def vcf_file(vcf, check_header=None, ind_list=None,
     headers = header.strip().split('\t')
     inds = headers[9:]
     if check_header and header != check_header:
-        sys.stderr.write('{} bad header\n'.format(vcf))
-        sys.stderr.write('Should be:\n{}\nInd:\n{}\n'.format(check_header, header))
+        _sys.stderr.write('{} bad header\n'.format(vcf))
+        _sys.stderr.write('Should be:\n{}\nInd:\n{}\n'.format(check_header, header))
         raise Exception('{} file had an invalid header'.format(vcf))
     if get_header:
         return header
@@ -126,10 +140,14 @@ def _vcf_file(vcf, inds, ind_list, gti, pos, log):
 
     # Get individual locations for lookup/filter
     ind_pos = []
+    total_inds = len(inds)
     if ind_list:
+        ind_count = len(ind_list)
         if sorted(ind_list) != sorted(inds):
             for ind in ind_list:
                 ind_pos.append(inds.index(ind))
+    else:
+        ind_count = len(inds)
 
     short_lines = 0
     bad_gts = 0
@@ -140,10 +158,120 @@ def _vcf_file(vcf, inds, ind_list, gti, pos, log):
         fin.seek(pos)
         count = 0
         for line in fin:
+            count += 1
             f = line.strip().split('\t')
             out = [f[0], f[1], f[3], f[4]]
             gti = f[8].split(':').index('GT')
             ind_data = f[9:]
+            if not len(ind_data) == total_inds:
+                short_lines += 1
+                continue
+            if ind_pos:
+                these_inds = []
+                for loc in ind_pos:
+                    these_inds.append(ind_data[loc])
+                if len(these_inds) != ind_count:
+                    short_lines += 1
+                    continue
+            else:
+                these_inds = ind_data
+            for ind in these_inds:
+                gt = parse_gt(ind.split(':')[gti])
+                if not gt:
+                    break
+                out.append(gt)
+            if (len(out) - 4) != ind_count:
+                #  log.write(
+                    #  'Bad line: {}\t{}\t{}\nLen: {}\tExpected: {}\n'.format(
+                        #  count, f[0], f[1], len(out)-4, ind_count
+                    #  )
+                #  )
+                bad_gts += 1
+                continue
+            yield out
+    log.write('Total: {}\nBad Genotypes: {}\nShort Lines (not enough inds): {}\n'
+              .format(count, bad_gts, short_lines))
+    return
+
+
+def bed_file(bed, check_header=None, ind_list=None,
+             get_header=False, get_inds=False, log=_sys.stderr):
+    """BED file iterator with goodies
+
+    Parameters
+    ----------
+    vcf : str
+        Path to a vcf file, can be gzipped
+    check_header : list, optional
+        If a list is provided, assert that header matches before iterating.
+    ind_list : list of str, optional
+        If list provided, filter output to only include these individuals.
+    get_header : bool, optional
+        Return a header instead of yielding a row
+    get_inds : bool, optional
+        Return a list of individuals instead of yielding a row
+    bad : file
+        File or handle to write errors
+
+    Yields
+    ------
+    chr : str
+    pos : str (base 1)
+    ref : str
+    alt : str
+    inds : list of str
+    """
+    # Get header at genotype loc
+    with _open_zipped(bed) as fin:
+        line = fin.readline()
+        while True:
+            if not line.startswith('#'):
+                header = line
+                pos    = fin.tell()
+                break
+            line   = fin.readline()
+
+    headers = header.strip().split('\t')
+    inds = headers[4:]
+    if check_header and header != check_header:
+        _sys.stderr.write('{} bad header\n'.format(bed))
+        _sys.stderr.write('Should be:\n{}\nInd:\n{}\n'.format(check_header, header))
+        raise Exception('{} file had an invalid header'.format(bed))
+    if get_header:
+        return header
+    if get_inds:
+        return inds
+
+    return _bed_file(bed, inds, ind_list, pos, log)
+
+
+def _bed_file(bed, inds, ind_list, pos, log):
+    """Iterator for BED."""
+
+    # Get individual locations for lookup/filter
+    ind_pos = []
+    total_inds = len(inds)
+    if ind_list:
+        ind_count = len(ind_list)
+        if sorted(ind_list) != sorted(inds):
+            for ind in ind_list:
+                ind_pos.append(inds.index(ind))
+    else:
+        ind_count = len(inds)
+
+    short_lines = 0
+    bad_gts = 0
+    count = 0
+
+    # Actually parse file
+    with _open_zipped(bed) as fin:
+        fin.seek(pos)
+        count = 0
+        for line in fin:
+            count += 1
+            f = line.strip().split('\t')
+            out = [f[0], f[1], f[2], f[3]]
+            ind_data = f[4:]
             if not len(ind_data) == len(inds):
                 short_lines += 1
                 continue
@@ -151,18 +279,24 @@ def _vcf_file(vcf, inds, ind_list, gti, pos, log):
                 these_inds = []
                 for loc in ind_pos:
                     these_inds.append(ind_data[loc])
-                assert len(these_inds) == len(ind_list)
+                if len(these_inds) != ind_count:
+                    short_lines += 1
+                    continue
             else:
                 these_inds = ind_data
             for ind in these_inds:
-                gt = parse_gt(ind.split(':')[gti])
+                gt = parse_gt(ind)
                 if not gt:
-                    #  _sys.stderr.write(
-                        #  'Bad line: {}\t{}\n'.format(count, line)
-                    #  )
-                    bad_gts += 1
-                    continue
+                    break
                 out.append(gt)
+            if (len(out) - 4) != ind_count:
+                #  log.write(
+                    #  'Bad line: {}\t{}\t{}\nLen: {}\tExpected: {}\n'.format(
+                        #  count, f[0], f[1], len(out)-4, ind_count
+                    #  )
+                #  )
+                bad_gts += 1
+                continue
             yield out
     log.write('Total: {}\nBad Genotypes: {}\nShort Lines (not enough inds): {}\n'
               .format(count, bad_gts, short_lines))
@@ -180,13 +314,24 @@ def parse_gt(gt):
             gt = '2'
         else:
             gt = None
+    if '/' in gt:
+        if gt == '0/0':
+            gt = '0'
+        elif gt in ['0/1', '1/0']:
+            gt = '1'
+        elif gt == '1/1':
+            gt = '2'
+        else:
+            gt = None
+    elif gt.isdigit():
+        gt = gt
     else:
         gt = None
     return gt
 
 
 def parse_files(geno_files, geno_output, individuals, skip_indels=True,
-                log_dir='.'):
+                log_dir='.', par_mode='fyrd'):
     """Loop through all geno files in parallel and then recombine.
 
     Parameters
@@ -202,6 +347,9 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
         Don't include rows with indels
     log_dir : str, optional
         Directory to write parse statistics to
+    par_mode : str, optional
+        Either 'serial', 'fyrd', or an integer core count for local
+        parallelization.
     """
     if not isinstance(geno_files, list):
         raise ValueError('genotype files must be a list')
@@ -213,9 +361,7 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
     # Individuals
     if _os.path.isfile(individuals):
         print('Using existing individuals file.')
-        with open(individuals) as fin:
-            inds = fin.read().strip().split('\n')
-        final_inds = inds
+        final_inds = get_inds(individuals)
     else:
         print('Creating new individuals file with all individuals.')
         inds = geno_file(
@@ -237,6 +383,11 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
     # Parse files
     count = 0
     print('Looping through VCFs')
+    if isinstance(par_mode, int):
+        mode = 'mp'
+        pool = _mp.Pool(par_mode)
+    else:
+        mode = par_mode
     jobs = []
     ourdir, us = _os.path.split(__file__)
     us = us.split('.')[0]
@@ -246,40 +397,61 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
         ofl = '{}.{}'.format(geno_output, count)
         if geno_output.endswith('gz'):
             ofl = ofl + '.gz'
-        jobs.append(
-            (
-                ofl,
-                fyrd.submit(
-                    parse_file, (geno, ofl, header, inds, skip_indels, log_fl),
-                    time="04:00:00", mem='12GB', syspaths=[ourdir],
-                    scriptpath=log_dir, outpath=log_dir, clean_files=False,
-                    clean_outputs=False, partition='high_priority',
-                    imports=[
-                        'from {} import *'.format(us),
-                        'from {} import _open_zipped'.format(us),
-                        'from {} import _vcf_file'.format(us)
-                    ]
+        args = (geno, ofl, header, inds, skip_indels, log_fl)
+        if mode == 'fyrd':
+            jobs.append(
+                (
+                    ofl,
+                    fyrd.submit(
+                        parse_file, args,
+                        time="04:00:00", mem='12GB', syspaths=[ourdir],
+                        scriptpath=log_dir, outpath=log_dir, clean_files=False,
+                        clean_outputs=False, partition='high_priority',
+                        imports=[
+                            'from {} import *'.format(us),
+                            'from {} import _open_zipped'.format(us),
+                            'from {} import _vcf_file'.format(us)
+                        ]
+                    )
                 )
             )
-        )
+        elif mode == 'mp':
+            jobs.append(
+                (
+                    ofl,
+                    pool.apply_async(
+                        parse_file, args
+                    )
+                )
+            )
+        else:
+            parse_file(*args)
+            jobs.append(ofl)
 
-    j = [i[1] for i in jobs]
-    fyrd.wait(j)
+    if mode == 'fyrd' or mode == 'mp':
+        j = [i[1] for i in jobs]
+
+    if mode == 'fyrd':
+        fyrd.wait(j)
+    elif mode == 'mp':
+        for i in j:
+            i.wait()
 
     print('Checking jobs')
 
-    # Check jobs
-    failed = []
-    for ofl, job in jobs:
-        if not job.state == 'completed':
-            failed.append((ofl, job))
-    if failed:
-        print('Failed: {}'.format(failed))
-        raise Exception('Failed')
+    if mode == 'fyrd':
+        # Check jobs
+        failed = []
+        for ofl, job in jobs:
+            job.update()
+            if not job.state == 'completed':
+                print('Job failed with state: {}\n{}'.format(job.state, job))
+                failed.append((ofl, job))
 
     fls = [i[0] for i in jobs]
     for fl in fls:
         if not _os.path.isfile(fl) or not _os.path.isfile(fl + '.done'):
+            print("Done file not created for {}".format(fl))
             failed.append(fl)
     if failed:
         raise Exception('The following files failed: {}'.format(failed))
@@ -303,10 +475,11 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
             _os.remove(temp_file)
 
 
-def parse_file(geno, outfile, header, inds=None, skip_indels=False, log=None):
+def parse_file(geno, outfile, header, inds=None, skip_indels=False,
+               log=None, fail_if_too_few_inds=False):
     """File parser, see parse_files for information."""
     if not log:
-        log = geno + '.parse.log'
+        log = outfile + '.parse.log'
     indels = 0
     kept = 0
     superbad = []
@@ -326,7 +499,19 @@ def parse_file(geno, outfile, header, inds=None, skip_indels=False, log=None):
             )
             # Write genotypes
             if inds:
-                if len(f[4:]) != len(inds):
+                if len(f[4:]) < len(inds):
+                    lg.write(
+                        '{chr}.{pos} had too few ({ind}) individuals\n'
+                        .format(chr=chrom, pos=f[1], ind=len(f[4:]))
+                    )
+                    if fail_if_too_few_inds:
+                        superbad.append(f)
+                    continue
+                if len(f[4:]) > len(inds):
+                    lg.write(
+                        '{chr}.{pos} had too many ({ind}) individuals\n'
+                        .format(chr=chrom, pos=f[1], ind=len(f[4:]))
+                    )
                     superbad.append(f)
                     continue
             outstr += '\t{}'.format('\t'.join(f[4:]))
@@ -336,7 +521,7 @@ def parse_file(geno, outfile, header, inds=None, skip_indels=False, log=None):
         if superbad:
             lg.write('Length failure despite length filtering:\n{}\n'
                      .format(superbad))
-    with open(outfile + '.done') as fout:
+    with open(outfile + '.done', 'w') as fout:
         fout.write('Done\n')
     return
 
@@ -379,19 +564,32 @@ def main(argv=None):
     parser.add_argument('individual_file',
                         help=("Individual file, create if does not exist, "
                               "if exists, filter by these inividuals"))
-    parser.add_argument('vcf_files', nargs='+', help="VCF Files")
+    parser.add_argument('gt_files', nargs='+', help="VCF or BED Files, gzipped OK")
 
     parser.add_argument('-s', '--skip_indels', action='store_true',
                         help="Don't include indels in output")
+    parser.add_argument('-m', '--multiprocessing', type=int,
+                        help="Parallelize locally, argument max cores (0 is all)")
+    parser.add_argument('--fyrd', action='store_true',
+                        help="Parallelize with fyrd")
     parser.add_argument('-l', '--log-dir', default='.',
                         help="Log directory")
 
     args = parser.parse_args(argv)
 
+    if args.multiprocessing is not None:
+        mode = min(args.multiprocessing, _mp.cpu_count())
+        if mode < 1:
+            mode = _mp.cpu_count()
+    elif args.fyrd:
+        mode = 'fyrd'
+    else:
+        mode = 'serial'
+
     parse_files(
         args.vcf_files, args.genotype_file,
         args.individual_file, skip_indels=args.skip_indels,
-        log_dir=args.log_dir
+        log_dir=args.log_dir, par_mode=mode
     )
 
 
