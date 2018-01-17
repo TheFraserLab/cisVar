@@ -314,7 +314,7 @@ def parse_gt(gt):
             gt = '2'
         else:
             gt = None
-    if '/' in gt:
+    elif '/' in gt:
         if gt == '0/0':
             gt = '0'
         elif gt in ['0/1', '1/0']:
@@ -362,6 +362,7 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
     if _os.path.isfile(individuals):
         print('Using existing individuals file.')
         final_inds = get_inds(individuals)
+        inds = final_inds
     else:
         print('Creating new individuals file with all individuals.')
         inds = geno_file(
@@ -371,7 +372,6 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
             fout.write('\n'.join(inds))
         final_inds = inds
         print('Individuals written')
-        inds = None
 
     print('\nUsing {} individuals.\n'.format(len(final_inds)))
 
@@ -426,10 +426,9 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
             )
         else:
             parse_file(*args)
-            jobs.append(ofl)
+            jobs.append(ofl, None)
 
-    if mode == 'fyrd' or mode == 'mp':
-        j = [i[1] for i in jobs]
+    j = [i[1] for i in jobs]
 
     if mode == 'fyrd':
         fyrd.wait(j)
@@ -439,9 +438,9 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
 
     print('Checking jobs')
 
+    # Check jobs
+    failed = []
     if mode == 'fyrd':
-        # Check jobs
-        failed = []
         for ofl, job in jobs:
             job.update()
             if not job.state == 'completed':
@@ -587,7 +586,7 @@ def main(argv=None):
         mode = 'serial'
 
     parse_files(
-        args.vcf_files, args.genotype_file,
+        args.gt_files, args.genotype_file,
         args.individual_file, skip_indels=args.skip_indels,
         log_dir=args.log_dir, par_mode=mode
     )

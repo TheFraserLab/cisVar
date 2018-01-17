@@ -102,6 +102,8 @@ linearRegression <- function(pd, gt, tmppfx, indiv) {
   cat("Calculating Weights\n"); flush.console()
   regression.weights = depths / (props.for.weights * (1-props.for.weights) )
   good = which( (postProp>0.1) & (postProp < 0.9))
+
+  # Regression is here:
   m = lm(Y[good] ~ G[good,]-1,weights=regression.weights[good])  ## run without intercept
   coefs = m$coef
   s = summary(m)
@@ -221,9 +223,11 @@ linearRegression <- function(pd, gt, tmppfx, indiv) {
   bed = xs[,c("Chr", "start", "position")]  ## reorder by column numbers
   sortedBed = bed[with(bed,order(Chr, start, position)),]
   finaloutFile = paste(tmppfx, ".total.txt", sep="")
+  finalcoeffs = paste(tmppfx, ".coefficients.txt", sep="")
   finalbed = paste(tmppfx, ".bed", sep="")
-  write.table(x, file= finaloutFile, sep="\t", quote=FALSE, row.names=FALSE, col.names=T)
-  write.table(sortedBed, file=finalbed, sep="\t", quote=FALSE, row.names=FALSE, col.names=F)
+  write.table(x, file=finaloutFile, sep="\t", quote=F, row.names=F, col.names=T)
+  write.table(sortedBed, file=finalbed, sep="\t", quote=F, row.names=F, col.names=F)
+  write.table(all.coeffs, file=finalcoeffs, sep="\t", quote=F, row.names=F, col.names=T)
 
   ###################
   #  Summary Plots  #

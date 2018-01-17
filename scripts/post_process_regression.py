@@ -34,21 +34,21 @@ log.setLevel(_log.INFO)
 orig_headers = [
     'Chr', 'position', 'REFallele', 'Depth', 'Acount', 'Ccount', 'Gcount',
     'Tcount', 'ALTdepth', 'REFDepth', 'ALTallele', 'REFfreq', 'ALTfreq',
-    'POSTallele', 'POSTfreq', 'prechipfreq', 'pvalue', 'zvalue',
+    'POSTallele', 'POSTfreq', 'prechipfreq', 'pvalue', 'zvalue', 'coeff',
     'prevar', 'postvar', 'SNPpostfreq', 'SNPprefreq'
 ]
 new_headers  = [
     'chrom', 'position', 'ref', 'depth', 'a_count', 'c_count', 'g_count',
     't_count', 'alt_depth', 'ref_depth', 'alt', 'ref_freq', 'alt_freq',
-    'post_allele', 'post_freq', 'pre_freq', 'p_value', 'z_value',
+    'post_allele', 'post_freq', 'pre_freq', 'p_value', 'z_value', 'coeff',
     'pre_variance', 'post_variance', 'snp_postfreq', 'snp_prefreq'
 ]
 final_headers = [
     'chrom', 'position', 'rsid', 'open_allele', 'closed_allele',
     'pre_freq', 'post_freq', 'pre_variance', 'post_variance', 'beta',
-    'p_value', 'z_value', 'ref', 'alt', 'depth', 'ref_depth', 'alt_depth',
-    'ref_freq', 'alt_freq', 'snp_postfreq', 'snp_prefreq', 'a_count',
-    'c_count', 'g_count', 't_count'
+    'p_value', 'z_value', 'coeff', 'ref', 'alt', 'depth', 'ref_depth',
+    'alt_depth', 'ref_freq', 'alt_freq', 'snp_postfreq', 'snp_prefreq',
+    'a_count', 'c_count', 'g_count', 't_count'
 ]
 float_dtypes = {
     'position': 'object',
@@ -58,6 +58,7 @@ float_dtypes = {
     'prechipfreq': 'float128',
     'pvalue': 'float128',
     'zvalue': 'float128',
+    'coeff': 'float128',
     'prevar': 'float128',
     'postvar': 'float128',
     'SNPpostfreq': 'float128',
