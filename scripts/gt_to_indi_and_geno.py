@@ -66,7 +66,7 @@ def geno_file(infile, check_header=None, ind_list=None,
     name = infile.split('.')
     if 'vcf' in name[-2:]:
         return vcf_file(infile, check_header, ind_list, get_header, get_inds, log)
-    if 'bed' in name[-2:]:
+    elif 'bed' in name[-2:]:
         return bed_file(infile, check_header, ind_list, get_header, get_inds, log)
     else:
         raise NotImplementedError(
