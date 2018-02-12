@@ -115,8 +115,8 @@ linearRegression <- function(pd, gt, tmppfx, indiv) {
   cat("Regression...\n"); flush.console()
   vars = sapply(1:n.snps, function(i) genotypes[i,] %*% big.cov.mat %*% genotypes[i,])
   vars[vars < 0] <- 0
-  all.coefs = c(coefs, 1-sum(coefs))
-  preProps = genotypes %*% as.matrix(all.coefs)
+  all.coeffs = c(coefs, 1-sum(coefs))
+  preProps = genotypes %*% as.matrix(all.coeffs)
   preProps[preProps > 1] <- 1
   preVars = vars
   postProps = estimated.props
