@@ -64,9 +64,9 @@ def geno_file(infile, check_header=None, ind_list=None,
     inds : list of str
     """
     name = infile.split('.')
-    if 'vcf' in name[-2:]:
+    if 'vcf' in name:
         return vcf_file(infile, check_header, ind_list, get_header, get_inds, log)
-    elif 'bed' in name[-2:]:
+    elif 'bed' in name:
         return bed_file(infile, check_header, ind_list, get_header, get_inds, log)
     else:
         raise NotImplementedError(
@@ -426,7 +426,7 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
             )
         else:
             parse_file(*args)
-            jobs.append(ofl, None)
+            jobs.append((ofl, None))
 
     j = [i[1] for i in jobs]
 
