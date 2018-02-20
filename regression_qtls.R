@@ -248,6 +248,10 @@ linearRegression <- function(pd, gt, tmppfx, indiv) {
   qqplot(runif(n.snps), an.pvs, xlab="Expected", ylab="Observed")#,xlim=c(0,0.1),ylim=c(0,0.1))
   abline(0,1)
   dev.off()
+  png(paste(tmppfx, ".qqplot.log.png", sep=""), width=fig.width, height=fig.height, pointsize=fig.font)
+  qqplot(runif(n.snps), an.pvs, xlab="Expected", ylab="Observed")#,xlim=c(0,0.1),ylim=c(0,0.1))
+  abline(0,1)
+  dev.off()
 
   cat("Done!\n"); flush.console()
 
