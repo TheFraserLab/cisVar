@@ -8,17 +8,15 @@ import sys as _sys
 import bz2 as _bz2
 import gzip as _gzip
 import argparse as _argparse
+import multiprocessing as mp
 
 try:
     import fyrd
-    print('Using fyrd, cores ignored')
 except ImportError:
-    print('Using multiprocessing')
-    import multiprocessing as mp
     fyrd = False
 
 
-def make_alleles(mpileup_file, vcf_files, allele_file, cores=1):
+def make_alleles(mpileup_file, vcf_files, allele_file, use_fyrd=True, cores=1):
     """Use VCF files plus the mpileup file to make alleles file.
 
     Note: We only use the mpileup file to limit the data in the vcf files.
@@ -28,13 +26,16 @@ def make_alleles(mpileup_file, vcf_files, allele_file, cores=1):
         vcf_files = [vcf_files]
     else:
         vcf_files = list(vcf_files)
-    if not fyrd:
-        pool = mp.Pool(cores)
     jobs = {}
+    if use_fyrd and fyrd:
+        print('Using fyrd, cores ignored')
+    else:
+        print('Using multiprocessing')
+        pool = mp.Pool(int(cores))
     for vcf in vcf_files:
-        if fyrd:
+        if use_fyrd and fyrd:
+            print('Using fyrd, cores ignored')
             jobs[vcf] = fyrd.submit(
-
                 get_vcf, (vcf,),
                 mem='12GB', time='04:00:00',
                 syspaths=[_os.path.dirname(_os.path.abspath(__file__))],
@@ -47,7 +48,7 @@ def make_alleles(mpileup_file, vcf_files, allele_file, cores=1):
             jobs[vcf] = pool.apply_async(get_vcf, (vcf,))
 
     all_loci = {}
-    if fyrd:
+    if use_fyrd and fyrd:
         fyrd.wait(jobs.values())
 
     all_loci = {}
@@ -136,8 +137,10 @@ def main(argv=None):
     )
 
     # Optional arguments
-    parser.add_argument('-c', '--cores', default=1,
+    parser.add_argument('-c', '--cores', default=1, type=int,
                         help='Number of cores to use')
+    parser.add_argument('--skip-fyrd', action='store_false',
+                        help='Do not use fyrd even if available')
 
     parser.add_argument('mpileup',
                         help='The M-pileup file to match')
@@ -152,7 +155,10 @@ def main(argv=None):
 
     ofl = args.allele_file if args.allele_file else _sys.stdout
 
-    return make_alleles(args.mpileup, args.vcf_files, ofl, args.cores)
+    return make_alleles(
+        args.mpileup, args.vcf_files, ofl,
+        use_fyrd=args.skip_fyrd, cores=args.cores
+    )
 
 if __name__ == '__main__' and '__file__' in globals():
     _sys.exit(main())
