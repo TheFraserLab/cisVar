@@ -1,6 +1,10 @@
 # Ipython
 .ipynb_checkpoints
 
+# Vim
+Session.vim
+.ropeproject
+
 # Apple's junk
 .DS_Store
 

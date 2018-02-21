@@ -26,14 +26,13 @@ cisVar qtls -F <SampleName> -r <readDepth> -n <numberIndividuals>
 
 
 import argparse
-import sys
 import os
 import operator
 import subprocess
-import scipy
-import numpy as np
-from scipy import stats
-import pandas as pd
+
+import psutil
+from tqdm import tqdm
+from datetime import datetime
 
 
 parser = argparse.ArgumentParser(description='Find cis QTLs based on an experimental selection method')
@@ -212,79 +211,91 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
     new_prefix = prefix_name + "." + str(trial_depths)
     postdataIN = new_prefix + ".POSTth.txt"
     outName = new_prefix + ".genotypes.txt"
-    print("file: ", new_prefix)
+    print("File: ", new_prefix)
 
     # Get list of sites with POSTfreq data
-    print("Getting SNPs")
-    postlocs = pd.read_csv(postdataIN, sep='\t')
-    postlocs['idx'] = postlocs[postlocs.columns[0]].astype(str) + '.' + postlocs[postlocs.columns[1]].astype(str)
+    print("Getting SNPs from POST data")
+    with open(postdataIN, 'r') as postdata:
+        postlocs = frozenset([
+            rows[0] + '.' + rows[1] for rows in [
+                line.split('\t') for line in postdata.readlines()
+            ]
+        ])
     print("Got SNPs")
 
     print("Reading file Locations")
     with open(individualslist , 'r') as indv:
-        indv_list = frozenset(indv.read().strip().split('\n'))
-    dtypes = {i: int for i in indv_list}
-    sidx = {}
-    c = 0
-    for i in indv_list:
-        sidx[i] = c
-        c += 1
+        indv_list = indv.read().strip().split('\n')
+
+    if not len(indv_list) == len(set(indv_list)):
+        raise Exception(
+            'Individual list {} not unique'.format(individualslist)
+        )
     print("Individual Locations Read Complete")
 
-    # Load genotypes
-    print("Loading genotypes")
-    genos = pd.read_csv(genosFile, sep='\t', dtype=dtypes)
-    genos['idx'] = genos[genos.columns[0]].astype(str) + '.' + genos[genos.columns[1]].astype(str)
-    print("Genotypes loaded")
-    print("Dropping indels")
-    l1 = len(genos)
-    genos = genos[(genos.alt.str.len() == 1) & (genos.ref.str.len() == 1)]
-    l2 = len(genos)
-    print("Dropped {} indels".format(l1-l2))
-    print("Dropping duplicates")
-    genos = genos.drop_duplicates('idx', keep=False)
-    l3 = len(genos)
-    print("Dropped {} duplicates".format(l2-l3))
-    print("Filtering by SNP")
-    genos = genos[genos.idx.isin(postlocs.idx)]
-    postlocs = postlocs[postlocs.idx.isin(genos.idx)]
-    print("Sorting")
-    genos = genos.sort_values(list(genos.columns[:2]))
-    postlocs = postlocs.sort_values(list(postlocs.columns[:2]))
-    genos = genos.set_index('idx', drop=True)
-    postlocs = postlocs.set_index('idx', drop=True)
-    print('Len {}: {}'.format(postdataIN, len(postlocs)))
-    print('Len genotypes: {}'.format(len(genos)))
-    print("Writing", postdataIN)
-    postlocs.to_csv(postdataIN, sep='\t', index=False)
-    print("Done")
-    print("Writing", prefix_name+"geno.txt")
-    genos.to_csv(prefix_name+"geno.txt", sep='\t')
-    print("Done")
-    print("Filtering by individual")
-    geno_len = len(genos)
-    genos = genos[list(indv_list)]
-    assert len(genos.columns) == len(indv_list)
-    genos = genos.dropna()
-    final_len = len(genos)
-    print('Dropped {} duplicates, writing {} lines to transpose'
-          .format(geno_len-final_len, final_len))
-    print("Transposing")
-    trans = genos.T
-    print("Writing", prefix_name+"transpose.txt")
-    trans.to_csv(prefix_name+"transpose.txt", sep='\t')
-    print("Done")
+    print("Filtering genotypes")
+    process = psutil.Process(os.getpid())
+    extras = 0
+    indels = 0
+    dups   = 0
+    done = []
+    print("Memory start: {:.2}GB".format(process.memory_info().rss/1024/1024/1024))
+    print("Time: {}".format(datetime.now()))
+    # Geno will have the same number of columns as the POST data has rows but
+    # will contain numeric matrix only, one column per SNP, and one row per
+    # individual *sorted to match individuals.txt*
+    mat = []
+    with open(genosFile) as genos_in:
+        # Parse header
+        header = genos_in.readline().strip().split('\t')
+        if header[1].isdigit():
+            print('Genotype file {} has no header, not parsing individuals'
+                  .format(genosFile))
+            h_done = False
+        else:
+            ind_locs = []
+            for ind in indv_list:
+                if ind not in header:
+                    raise Exception('Missing {} from genotypes'.format(ind))
+                ind_locs.append(header.index(ind))
+            h_done = True
+        for line in tqdm(genos_in):
+            row = line.strip().split('\t')
+            # Filter by SNP
+            snp = row[0] + '.' + row[1]
+            if snp not in postlocs:
+                extras += 1
+                continue
+            # Filter out INDELS
+            if len(row[2]) > 1 or len(row[3]) > 1:
+                indels += 1
+                continue
+            # Filter duplicates, keep first
+            if snp in done:
+                dups += 1
+                continue
+            done.append(snp)
+            # Filter and sort individuals
+            if h_done:
+                mat.append([row[i] for i in ind_locs])
+            else:
+                mat.append(row[4:])
+    print("Genotype filtering complete")
+    print("Memory end: {:.2}GB".format(process.memory_info().rss/1024/1024/1024))
+    print("Time: {}".format(datetime.now()))
+    print("Dropped {} unneeded SNPs".format(extras))
+    print("Dropped {} indels".format(indels))
+    print("Dropped {} duplicates".format(dups))
 
-    print('Final filter')
-    trans = trans[trans.index.to_series().isin(indv_list)]
-    trans['sort'] = trans.index.to_series().map(sidx)
-    trans = trans.sort_values('sort')
-    trans = trans.drop('sort', axis=1)
-    trans = trans.astype(int)
-    print("Writing numeric matrix:", outName)
-    trans.to_csv(outName, sep='\t', header=False, index=False)
+    print("Transposing")
+    with open(outName, 'w') as fout:
+        fout.write(
+            '\n'.join(
+                ['\t'.join(i) for i in zip(*mat)]
+            )
+        )
     print("Done")
-    return
+    del mat
 
 
 ######################################################################################
