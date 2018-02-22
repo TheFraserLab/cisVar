@@ -19,20 +19,17 @@ cisVar geno -F <SampleName> -r <readDepth> -i <individualsFile> -g <genotypesFil
 cisVar qtls -F <SampleName> -r <readDepth> -n <numberIndividuals>
 
 """
-
-######################################################################################
-# ARGUEMENTS
-######################################################################################
-
-
-import argparse
 import os
+import argparse
 import operator
 import subprocess
 
 import psutil
-from tqdm import tqdm
 from datetime import datetime
+
+######################################################################################
+# ARGUEMENTS
+######################################################################################
 
 
 parser = argparse.ArgumentParser(description='Find cis QTLs based on an experimental selection method')
@@ -208,38 +205,43 @@ def postTrim(prefix_name, trial_depths):
 ######################################################################################
 
 def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
-    new_prefix = prefix_name + "." + str(trial_depths)
-    postdataIN = new_prefix + ".POSTth.txt"
-    outName = new_prefix + ".genotypes.txt"
-    print("File: ", new_prefix)
+    """Filter genotypes by SNP and individual.
 
+    First loops through genotypes and filters to a temp file, then transposes,
+    then filters transposed lines by individual.
+    """
+    new_prefix = prefix_name + "." + str(trial_depths)
+    postdata = new_prefix + ".POSTth.txt"
+    out_name = new_prefix + ".genotypes.txt"
+    print("File: ", new_prefix)
+    # Track memory usage
+    process = psutil.Process(os.getpid())
+
+    print("Memory start: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
     # Get list of sites with POSTfreq data
     print("Getting SNPs from POST data")
-    with open(postdataIN, 'r') as postdata:
-        postlocs = frozenset([
+    with open(postdata, 'r') as postin:
+        # Drop first line if it is a header (position is not numberic)
+        header = postin.readline().strip().split('\t')
+        if header[1].isdigit():
+            postin.seek(0)
+        postlocs = [
             rows[0] + '.' + rows[1] for rows in [
-                line.split('\t') for line in postdata.readlines()
+                line.split('\t') for line in postin.readlines()
             ]
-        ])
-    print("Got SNPs")
-
-    print("Reading file Locations")
-    with open(individualslist , 'r') as indv:
-        indv_list = indv.read().strip().split('\n')
-
-    if not len(indv_list) == len(set(indv_list)):
-        raise Exception(
-            'Individual list {} not unique'.format(individualslist)
-        )
-    print("Individual Locations Read Complete")
+        ]
+    l = len(postlocs)
+    postlocs = set(postlocs)
+    # The POST data must be unique per SNP, if it isn't we have a big problem
+    # somewhere in the earlier steps
+    assert l == len(postlocs)
+    print("Got {} SNPs".format(l))
+    print("Memory SNPs: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
 
     print("Filtering genotypes")
-    process = psutil.Process(os.getpid())
     extras = 0
     indels = 0
     dups   = 0
-    done = []
-    print("Memory start: {:.2}GB".format(process.memory_info().rss/1024/1024/1024))
     print("Time: {}".format(datetime.now()))
     # Geno will have the same number of columns as the POST data has rows but
     # will contain numeric matrix only, one column per SNP, and one row per
@@ -249,17 +251,31 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
         # Parse header
         header = genos_in.readline().strip().split('\t')
         if header[1].isdigit():
-            print('Genotype file {} has no header, not parsing individuals'
-                  .format(genosFile))
-            h_done = False
-        else:
-            ind_locs = []
-            for ind in indv_list:
-                if ind not in header:
-                    raise Exception('Missing {} from genotypes'.format(ind))
-                ind_locs.append(header.index(ind))
-            h_done = True
-        for line in tqdm(genos_in):
+            raise Exception(
+                'Genotype file {} has no header, cannot parse individuals'
+                .format(genosFile)
+            )
+
+        # Check file is sorted
+        print(
+            "Genotype file must be sorted by position,",
+            "checking first 100 lines"
+        )
+        pos = genos_in.tell()
+        c = 100
+        lns = []
+        while c:
+            lns.append(int(genos_in.readline().split('\t')[1]))
+            c -= 1
+        assert lns == sorted(lns)
+        print("Genotype file appears properly sorted, parsing.")
+        genos_in.seek(pos)
+
+        # Point a local variable at the method to save lookup time
+        post_discard = postlocs.discard
+        # Parse the file
+        mat  = [header[4:]]
+        for line in genos_in:
             row = line.strip().split('\t')
             # Filter by SNP
             snp = row[0] + '.' + row[1]
@@ -268,34 +284,59 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
                 continue
             # Filter out INDELS
             if len(row[2]) > 1 or len(row[3]) > 1:
-                indels += 1
-                continue
-            # Filter duplicates, keep first
-            if snp in done:
-                dups += 1
-                continue
-            done.append(snp)
-            # Filter and sort individuals
-            if h_done:
-                mat.append([row[i] for i in ind_locs])
-            else:
-                mat.append(row[4:])
+                if len(row[2]) > 1:
+                    raise Exception(
+                        'Genotype file has more than one char for ref at '
+                        'line:\n{}'.format(line)
+                    )
+                for allele in row[3].split(','):
+                    if len(allele) > 1:
+                        indels += 1
+                        continue
+            # Drop snp from postlocs to avoid duplicates
+            post_discard(snp)
+            # Keep only the genotype data, not the position data
+            mat.append(row[4:])
     print("Genotype filtering complete")
-    print("Memory end: {:.2}GB".format(process.memory_info().rss/1024/1024/1024))
+    print("Memory genos: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
     print("Time: {}".format(datetime.now()))
     print("Dropped {} unneeded SNPs".format(extras))
     print("Dropped {} indels".format(indels))
     print("Dropped {} duplicates".format(dups))
 
-    print("Transposing")
-    with open(outName, 'w') as fout:
-        fout.write(
-            '\n'.join(
-                ['\t'.join(i) for i in zip(*mat)]
-            )
+    print("Checking all POST SNPs matched")
+    if len(postlocs) != 0:
+        err_file = new_prefix + ".missing.snps"
+        with open(err_file, "w") as fout:
+            fout.write('\n'.join(sorted(postlocs)))
+        raise Exception(
+            "{} SNPs in POST were not in the genotype file, written to {}"
+            .format(len(postlocs), err_file)
         )
     print("Done")
+
+    print("Transposing to dictionary")
+    trans = {i[0]: i[1:] for i in zip(*mat)}
+    #  with open(out_name, 'w') as fout:
+        #  fout.write(
+            #  '\n'.join(
+                #  ['\t'.join(i) for i in zip(*mat)]
+            #  )
+        #  )
+    print("Memory transpose: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
     del mat
+    print("Memory transpose tidy: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
+    print("Done")
+
+    print("Filtering by individual and writing")
+    with open(individualslist , 'r') as indv, open(out_name, 'w') as fout:
+        for ind in indv:
+            ind = ind.strip()
+            if ind in trans:
+                fout.write('\t'.join(trans[ind]) + '\n')
+            else:
+                print('Missing:', ind)
+    print("Memory End: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
 
 
 ######################################################################################
@@ -304,13 +345,13 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
 
 def regPVAL(prefix_name, trial_depths, numIndv):
     new_prefix = prefix_name + "." + str(trial_depths)
-    postdataIN = new_prefix + ".POSTth.txt"
-    genosoutName = new_prefix + ".genotypes.txt"
+    postdata = new_prefix + ".POSTth.txt"
+    genosout_name = new_prefix + ".genotypes.txt"
     ### make sure location of R script is correct
     orig_r = os.path.join(os.path.dirname(__file__), 'regression_qtls.R')
     if not os.path.isfile(orig_r):
         raise OSError('File not found: {}'.format(orig_r))
-    commandLine = "sed -e 's!postdataIN!" + postdataIN + "!g' " + orig_r + " | sed -e 's!genosoutName!" + genosoutName + "!g' | sed -e 's!prefix!" + new_prefix + "!g' | sed -e 's!numIndiv!" + numIndv + "!g'> " + prefix_name + "1.R"
+    commandLine = "sed -e 's!postdata!" + postdata + "!g' " + orig_r + " | sed -e 's!genosout_name!" + genosout_name + "!g' | sed -e 's!prefix!" + new_prefix + "!g' | sed -e 's!numIndiv!" + numIndv + "!g'> " + prefix_name + "1.R"
     print(commandLine)
     subprocess.check_call(commandLine, shell=True)
     commandout = "Rscript " +prefix_name+ "1.R"
