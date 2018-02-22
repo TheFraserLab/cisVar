@@ -209,6 +209,22 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
 
     First loops through genotypes and filters to a temp file, then transposes,
     then filters transposed lines by individual.
+
+    Takes approximately 10 minutes and uses 10GB of memory on a genotype file
+    of 77 million SNPs and an individuals files of 66 individuals.
+
+    Params
+    ------
+    prefix_name : str
+    trial_depths : int
+    individualslist : str
+        Path to file of individuals separated by line
+    genosFile : str
+        Path to genotype file to parse. Must be in the format:
+            chrom\\tpos\\tref\\talt\\tgenotypes...
+        Genotypes must be in 0/1/2 format, and the file must contain a header
+        with the individual names.
+        Note: Genotype file *must* be sorted by position.
     """
     new_prefix = prefix_name + "." + str(trial_depths)
     postdata = new_prefix + ".POSTth.txt"
