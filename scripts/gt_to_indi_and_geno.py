@@ -272,7 +272,7 @@ def _bed_file(bed, inds, ind_list, pos, log):
             f = line.strip().split('\t')
             out = [f[0], f[1], f[2], f[3]]
             ind_data = f[4:]
-            if not len(ind_data) == len(inds):
+            if len(ind_data) != total_inds:
                 short_lines += 1
                 continue
             if ind_pos:
@@ -298,8 +298,10 @@ def _bed_file(bed, inds, ind_list, pos, log):
                 bad_gts += 1
                 continue
             yield out
-    log.write('Total: {}\nBad Genotypes: {}\nShort Lines (not enough inds): {}\n'
-              .format(count, bad_gts, short_lines))
+    log.write(
+        'Total: {}\nBad Genotypes: {}\nShort Lines (not enough inds): {}\n'
+        .format(count, bad_gts, short_lines)
+    )
     return
 
 
