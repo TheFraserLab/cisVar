@@ -258,5 +258,14 @@ linearRegression <- function(pd, gt, tmppfx, indiv) {
 
 }
 
-linearRegression("postdataIN", "genosoutName", "prefix", "numIndiv")
+args <- commandArgs(trailingOnly = TRUE)
 
+if (length(args) != 4) {
+  stop("Rscript regression_qtls.R <post> <genos> <prefix> <indiv>.", call.=FALSE)
+}
+post  = args[1]
+genos = args[2]
+prefix = args[3]
+indiv = as.numeric(args[4])
+
+linearRegression(post, genos, prefix, indiv)

@@ -273,12 +273,12 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
             )
 
         # Check file is sorted
+        pos = genos_in.tell()
+        c = 1000
         print(
             "Genotype file must be sorted by position,",
-            "checking first 100 lines"
+            "checking first {0} lines".format(c)
         )
-        pos = genos_in.tell()
-        c = 100
         lns = []
         while c:
             lns.append(int(genos_in.readline().split('\t')[1]))
@@ -288,7 +288,8 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
         genos_in.seek(pos)
 
         # Point a local variable at the method to save lookup time
-        post_discard = postlocs.discard
+        done_snps = set()
+        add_to_done = done_snps.add
         # Parse the file
         mat  = [header[4:]]
         for line in genos_in:
@@ -297,6 +298,9 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
             snp = row[0] + '.' + row[1]
             if snp not in postlocs:
                 extras += 1
+                continue
+            if snp in done_snps:
+                dups += 1
                 continue
             # Filter out INDELS
             if len(row[2]) > 1 or len(row[3]) > 1:
@@ -309,10 +313,10 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
                     if len(allele) > 1:
                         indels += 1
                         continue
-            # Drop snp from postlocs to avoid duplicates
-            post_discard(snp)
             # Keep only the genotype data, not the position data
             mat.append(row[4:])
+            # Done
+            add_to_done(snp)
     print("Genotype filtering complete")
     print("Memory genos: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
     print("Time: {}".format(datetime.now()))
@@ -321,24 +325,26 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
     print("Dropped {} duplicates".format(dups))
 
     print("Checking all POST SNPs matched")
-    if len(postlocs) != 0:
+    if len(postlocs) != len(done_snps):
         err_file = new_prefix + ".missing.snps"
         with open(err_file, "w") as fout:
-            fout.write('\n'.join(sorted(postlocs)))
+            fout.write(
+                '\n'.join(sorted([i for i in postlocs if i not in done]))
+            )
         raise Exception(
             "{} SNPs in POST were not in the genotype file, written to {}"
-            .format(len(postlocs), err_file)
+            .format(len(postlocs)-len(done), err_file)
         )
     print("Done")
 
     print("Transposing to dictionary")
     trans = {i[0]: i[1:] for i in zip(*mat)}
-    #  with open(out_name, 'w') as fout:
-        #  fout.write(
-            #  '\n'.join(
-                #  ['\t'.join(i) for i in zip(*mat)]
-            #  )
-        #  )
+    with open(out_name, 'w') as fout:
+        fout.write(
+            '\n'.join(
+                ['\t'.join(i) for i in zip(*mat)]
+            )
+        )
     print("Memory transpose: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
     del mat
     print("Memory transpose tidy: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
@@ -364,15 +370,10 @@ def regPVAL(prefix_name, trial_depths, numIndv):
     postdata = new_prefix + ".POSTth.txt"
     genosout_name = new_prefix + ".genotypes.txt"
     ### make sure location of R script is correct
-    orig_r = os.path.join(os.path.dirname(__file__), 'regression_qtls.R')
-    if not os.path.isfile(orig_r):
-        raise OSError('File not found: {}'.format(orig_r))
-    commandLine = "sed -e 's!postdata!" + postdata + "!g' " + orig_r + " | sed -e 's!genosout_name!" + genosout_name + "!g' | sed -e 's!prefix!" + new_prefix + "!g' | sed -e 's!numIndiv!" + numIndv + "!g'> " + prefix_name + "1.R"
-    print(commandLine)
-    subprocess.check_call(commandLine, shell=True)
-    commandout = "Rscript " +prefix_name+ "1.R"
-    subprocess.check_call("chmod u+x " +prefix_name+ "1.R", shell=True)
-    subprocess.check_call(commandout, shell=True)
+    r_script = os.path.join(os.path.dirname(__file__), 'regression_qtls.R')
+    if not os.path.isfile(r_script):
+        raise OSError('File not found: {}'.format(r_script))
+    subprocess.check_call(['Rscript', r_script, postdata, genosout_name, new_prefix, numIndv])
     os.system("rm " +prefix_name+ "1.R")
     print("regression DONE")
     return
