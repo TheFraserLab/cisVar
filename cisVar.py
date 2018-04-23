@@ -1,18 +1,17 @@
-#!/usr/bin/python3
-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-#==============================================================================
-#
-#          FILE: cisVar (python 3)
-#        AUTHOR: Ashley Tehranchi, tehranchi576@gmail.com
-#  ORGANIZATION: Stanford University
-#       CREATED: 2015-12-12 11:33
-# Last modified: 2017-11-06 12:31
-#
-#
-#==============================================================================
+cisVar: Find cis QTLs based on an experimental selection method
 
+Ashley Tehranchi <tehranchi576@gmail.com>
 
+Stanford University
+
+Version: 2.0.0b1
+Created: 2015-12-12
+Updated: 2018-04-23
+
+Example usage:
 cisVar mpileup -F <SampleName> -f <fastaFile> -p <mpileupBEDfile> -B <sortedBam>
 cisVar post -F <SampleName> -r <readDepth> -a <allelesFile>
 cisVar geno -F <SampleName> -r <readDepth> -i <individualsFile> -g <genotypesFile>
@@ -20,33 +19,13 @@ cisVar qtls -F <SampleName> -r <readDepth> -n <numberIndividuals>
 
 """
 import os
+import sys
 import argparse
 import operator
 import subprocess
 
 import psutil
 from datetime import datetime
-
-######################################################################################
-# ARGUEMENTS
-######################################################################################
-
-
-parser = argparse.ArgumentParser(description='Find cis QTLs based on an experimental selection method')
-parser.add_argument('inputCommand', help='<mpileup>  <post>  <geno>  <qtls> ')
-parser.add_argument('-F', '--SampleName', required=False, dest='prefix_name', help='sample/population name')
-parser.add_argument('-f', '--fasta', required=False, dest='allCHRfasta', help='fasta file with all chromosomes')
-parser.add_argument('-B', '--BAMfile', required=False, dest='sortedBam', help='sorted BAM file')
-parser.add_argument('-r', '--readDepth', required=False, type=int, dest='trial_depths', help='minimum read depth per variant')
-parser.add_argument('-i', '--individualsFile', required=False, dest='individualslist', help='list of individuals matching genotype matrix; one indv per line')
-parser.add_argument('-a', '--allelesFile', required=False, dest='allelesFileName', help='format: chr1    10583   G   A')
-parser.add_argument('-n', '--numberIndividuals', required=False, dest='numIndv', help='The number of individuals in the pool')
-parser.add_argument('-p', '--mpileupBEDfile', required=False, dest='mpileupBEDfile', help='The  mpileup BED file')
-parser.add_argument('-g', '--genoFile', required=False, dest='genosFile', help='The  genotypes file')
-args = parser.parse_args()
-
-
-WorkingDirectory = os.getcwd()
 
 ######################################################################################
 # MPILEUP FROM BAM FILES USING HG19 MASKED GENOME WITH BLACKLISTED REGIONS REMOVED
@@ -383,12 +362,109 @@ def regPVAL(prefix_name, trial_depths, numIndv):
 # COMMANDS #
 ##################
 
-if args.inputCommand == 'mpileup':
-    mpileup(args.allCHRfasta, args.mpileupBEDfile, args.sortedBam, args.prefix_name)
-elif args.inputCommand == 'post':
-    postcalc(args.prefix_name, args.trial_depths, args.allelesFileName)
-    postTrim(args.prefix_name, args.trial_depths)
-elif args.inputCommand == 'geno':
-    genoExtract(args.prefix_name, args.trial_depths, args.individualslist, args.genosFile)
-elif args.inputCommand == 'qtls':
-    regPVAL(args.prefix_name, args.trial_depths, args.numIndv)
+def main():
+    """Run as a script."""
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    # Subcommands
+    modes = parser.add_subparsers(
+        dest='inputCommand',
+        metavar='{mpileup,post,geno,qtls}'
+    )
+
+    # Shared commands
+    shared_cmds = argparse.ArgumentParser(add_help=False)
+    run_opts = shared_cmds.add_argument_group("Run Options")
+    run_opts.add_argument(
+        '-r', '--readDepth', type=int, dest='trial_depths', default=20,
+        help='minimum read depth per variant'
+    )
+    run_opts.add_argument(
+        '-F', '--SampleName', dest='prefix_name', default='cis_var',
+        help='sample/population name'
+    )
+
+
+    # mpileup
+    mpileup_cmd_grp = modes.add_parser(
+        'mpileup', description="Run mpileup",
+        parents=[shared_cmds], help="Run mpileup",
+        aliases=['m'],
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    mpileup_cmd = mpileup_cmd_grp.add_argument_group(
+        "mpileup Options (Required)"
+    )
+    mpileup_cmd.add_argument(
+        '-f', '--fasta', required=True, dest='allCHRfasta',
+        help='fasta file with all chromosomes'
+    )
+    mpileup_cmd.add_argument(
+        '-B', '--BAMfile', required=True, dest='sortedBam',
+        help='sorted BAM file'
+    )
+    mpileup_cmd.add_argument(
+        '-p', '--mpileupBEDfile', required=True, dest='mpileupBEDfile',
+        help='The  mpileup BED file'
+    )
+
+    # POST
+    post_cmd_grp = modes.add_parser(
+        'post', description="Run POST frequency calculation",
+        parents=[shared_cmds], help="Run POST frequency calculation",
+        aliases=['p'],
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    post_cmd = post_cmd_grp.add_argument_group("POST Options (Required)")
+    post_cmd.add_argument(
+        '-a', '--allelesFile', required=True, dest='allelesFileName',
+        help='format: chr1    10583   G   A'
+    )
+
+    # geno
+    geno_cmd_grp = modes.add_parser(
+        'geno', description="Munge genotypes to prepare for regression",
+        parents=[shared_cmds],
+        help="Munge genotypes to prepare for regression", aliases=['g'],
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    geno_cmd = geno_cmd_grp.add_argument_group("Genotype Options (Required)")
+    geno_cmd.add_argument(
+        '-i', '--individualsFile', required=True, dest='individualslist',
+        help='list of individuals matching genotype matrix; one indv per line'
+    )
+    geno_cmd.add_argument(
+        '-g', '--genoFile', required=True, dest='genosFile',
+        help='The genotypes file'
+    )
+
+    # geno
+    qtls_cmd_grp = modes.add_parser(
+        'qtls', description="Run the regression",
+        parents=[shared_cmds],  aliases=['q', 'regression', 'r'],
+        help="Run the regression",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    qtls_cmd = qtls_cmd_grp.add_argument_group("Regression Options (Required)")
+    qtls_cmd.add_argument(
+        '-n', '--numberIndividuals', required=True, dest='numIndv',
+        help='The number of individuals in the pool'
+    )
+
+    args = parser.parse_args()
+
+    if args.inputCommand == 'mpileup':
+        mpileup(args.allCHRfasta, args.mpileupBEDfile, args.sortedBam, args.prefix_name)
+    elif args.inputCommand == 'post':
+        postcalc(args.prefix_name, args.trial_depths, args.allelesFileName)
+        postTrim(args.prefix_name, args.trial_depths)
+    elif args.inputCommand == 'geno':
+        genoExtract(args.prefix_name, args.trial_depths, args.individualslist, args.genosFile)
+    elif args.inputCommand == 'qtls':
+        regPVAL(args.prefix_name, args.trial_depths, args.numIndv)
+
+if __name__ == '__main__' and '__file__' in globals():
+    sys.exit(main())
