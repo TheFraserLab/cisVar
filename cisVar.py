@@ -9,7 +9,7 @@ Stanford University
 
 Version: 2.0.0b1
 Created: 2015-12-12
-Updated: 2018-04-23
+Updated: 2018-04-24
 
 Example usage:
 cisVar mpileup -F <SampleName> -f <fastaFile> -p <mpileupBEDfile> -B <sortedBam>
@@ -17,49 +17,83 @@ cisVar post -F <SampleName> -r <readDepth> -a <allelesFile>
 cisVar geno -F <SampleName> -r <readDepth> -i <individualsFile> -g <genotypesFile>
 cisVar qtls -F <SampleName> -r <readDepth> -n <numberIndividuals>
 
+Note:
+The qtls regression step will use approximately 32GB of memory on an averaged-
+sized dataset.
+
+The geno step will use approximately 20GB of memory on the same dataset.
+
 """
+from __future__ import print_function
 import os
 import sys
 import argparse
 import operator
 import subprocess
 
-import psutil
+import bz2 as _bz2
+import gzip as _gzip
 from datetime import datetime
 
-######################################################################################
-# MPILEUP FROM BAM FILES USING HG19 MASKED GENOME WITH BLACKLISTED REGIONS REMOVED
-######################################################################################
+# psutil is used to print memory usage if installed, otherwise ignored
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+############################################################################
+# mpileup BAM files with hg19 masked genome with blacklist regions removed #
+############################################################################
+
 
 def mpileup(allCHRfasta, mpileupBEDfile, sortedBam, prefix_name):
-    os.system("samtools mpileup -Q 25 -f " + allCHRfasta +" -l "+ mpileupBEDfile +" " + sortedBam + " > " + prefix_name + ".mpileup.txt")
-    ## outputs prefix.mpileup.txt
-    return()
+    """Run mpileup on the provided files."""
+    # outputs prefix.mpileup.txt
+    subprocess.check_call(
+        "samtools mpileup -Q 25 -f " + allCHRfasta + " -l " + mpileupBEDfile \
+        + " " + sortedBam + " > " + prefix_name + ".mpileup.txt",
+        shell=True
+    )
 
 
-######################################################################################
-#POST-CHIP CALCULATION AND FILE TRIMMIMG PLUS HEADER ADDITION
-######################################################################################
+###########################################################################
+#                 POST-ChIP Calculation and File Trimming                 #
+###########################################################################
+
 
 def postcalc(prefix_name, trial_depths, allelesFileName):
-    os.system("module load samtools")
-    print(prefix_name)
-    print("Post-ChIP calculation for min reads ",trial_depths)
-    infilename = prefix_name + ".mpileup.txt"
-    inalleles = allelesFileName
+    """Calculate POST frequencies from mpileup results."""
+    print("Post-ChIP calculation for min reads {}".format(trial_depths))
+
+    infilename  = prefix_name + ".mpileup.txt"
+    inalleles   = allelesFileName
     outfilename = prefix_name + "." + str(trial_depths) + ".POST.txt"
     depth = int(trial_depths)
 
     pileup_dictionary = {}
     count = 1
-    bad = 0
-    outfile = open(outfilename, 'w')
-    with open(infilename, 'r') as pileup:
+    bad   = 0
+    # mpileup format:
+    # chromosome, 1-based coordinate, reference base, # reads covering the
+    # site, read bases, and base qualities
+    with open_zipped(infilename, 'r') as pileup:
         for line in pileup:
-            #print count
             count = count + 1
-            rows = line.rstrip('\n').split("\t")
-            if (int(rows[3]) < depth):
+            rows = line.rstrip().split("\t")
+            if not len(rows) == 6:
+                bad += 1
+                continue
+
+            # SNP name is just chr.position
+            snp = rows[0] + "." + rows[1]
+            # cov is the total coverage for the SNP
+            cov = int(rows[3])
+            # Normalize base (called read here) to lowercase to make counting
+            # easier
+            read = str(rows[4]).lower()
+
+            # Only work on those with coverage exceeding the minimum depth
+            if cov < depth:
                 Acount = 'NA'
                 Ccount = 'NA'
                 Gcount = 'NA'
@@ -70,120 +104,170 @@ def postcalc(prefix_name, trial_depths, allelesFileName):
                 RefFreq = 'NA'
                 AltFreq = 'NA'
             else:
-                if (int(rows[3]) >= depth):
-                    read = str(rows[4]).lower() # isolate overlapping positions from reads, make all letters lowercase to count them properly
-                    Acount = read.count('a')    # count all A's, A is plus strand, a in negative strand, count both
-                    Ccount = read.count('c')
-                    Gcount = read.count('g')
-                    Tcount = read.count('t')
-                    countslist = [Acount, Ccount, Gcount, Tcount]  #make list of all counts
-                    index, ALTdepth = max(enumerate(countslist), key=operator.itemgetter(1)) #find index of largest number and the value
-                    #print("index ", index)
-                    indels = rows[4].count('-') + rows[4].count('+')
-                    REFdepth = int(rows[3]) - int(Acount) - int(Ccount) - int(Gcount) - int(Tcount) - int(indels)
-                    #print("indels, REFdepth ", indels, REFdepth)
-                    ##added 9/2/14
-                    #print(rows)
-                    rows[3] = str(int(REFdepth) + int(ALTdepth)) ## Adjusts totaldepth to remove third alleles/sequencing errors
-                    #print(rows)
-                    ##
-                    ALTallele = "NA"
-                    if (index == 0):
-                        ALTallele = 'A'
-                    if (index == 1):
-                        ALTallele = 'C'
-                    if (index == 2):
-                        ALTallele = 'G'
-                    if (index == 3):
-                        ALTallele = 'T'
-                    RefFreq = "NA"
-                    AltFreq = "NA"
-                    if (rows[3] == 0):
-                        RefFreq = str(0)
-                        print("mistake")
-                    else:
-                        if (float(rows[3]) > depth) and ((float(REFdepth) / float(rows[3])) >= 0) :    ## depth greater than 0 and postfreq > 0
-                            RefFreq = str(REFdepth / float(rows[3]))            # to get ref freq, totaldepth - altdepth = refdepth / totaldepth
-                            AltFreq = str(1 - float(RefFreq))
-            if not len(rows) == 6:
-                bad += 1
-                continue
+                # Count all A's, A is plus strand, a in negative strand,
+                # count both
+                Acount = read.count('a')
+                Ccount = read.count('c')
+                Gcount = read.count('g')
+                Tcount = read.count('t')
 
-            pileup_dictionary[rows[0] + "." + rows[1]] = (
+                # Make list of all counts
+                countslist = [Acount, Ccount, Gcount, Tcount]
+                # Find index of largest number and the value
+                # ALT is assumed to be most common of the 4 bases
+                index, ALTdepth = max(
+                    enumerate(countslist), key=operator.itemgetter(1)
+                )
+
+                indels = rows[4].count('-') + rows[4].count('+')
+                REFdepth = cov - Acount - Ccount - Gcount - Tcount - indels
+
+                # Adjusts total_depth/cov to remove third alleles/sequencing
+                # errors
+                snp_depth = REFdepth + ALTdepth
+                rows[3] = str(depth)
+
+                if index == 0:
+                    ALTallele = 'A'
+                elif index == 1:
+                    ALTallele = 'C'
+                elif index == 2:
+                    ALTallele = 'G'
+                elif index == 3:
+                    ALTallele = 'T'
+                else:
+                    ALTallele = "NA"
+
+                RefFreq = "NA"
+                AltFreq = "NA"
+
+                if snp_depth == 0:
+                    RefFreq = str(0)
+                    print(
+                        "Reference frequency is 0 for {}, probably a mistake"
+                        .format(snp)
+                    )
+                else:
+                    postfreq = float(REFdepth) / float(snp_depth)
+                    if snp_depth > depth and postfreq >= 0:
+                        # To get ref freq:
+                        # totaldepth - altdepth = refdepth / totaldepth
+                        RefFreq = str(postfreq)
+                        AltFreq = str(1 - postfreq)
+
+            pileup_dictionary[snp] = (
                 rows[2:] + [
                     Acount, Ccount, Gcount, Tcount, ALTdepth,
                     REFdepth, ALTallele, RefFreq, AltFreq
                 ]
             )
-            #print("ALTallele, row ",ALTallele, rows)
-            assert len(pileup_dictionary[rows[0] + "." + rows[1]]) == 13
-    linecounter =1
+            assert len(pileup_dictionary[snp]) == 13
+
     print('{} mpileup rows were too short and thus skipped'.format(bad))
-    with open(inalleles) as alleles:
+
+    linecounter = 1
+    with open_zipped(inalleles) as alleles, open_zipped(outfilename, 'w') as outfile:
         for line in alleles:
             row = line.rstrip().split('\t')
+            snp = row[0] + '.' + row[1]
+
+            if snp in pileup_dictionary:
+                matchingVector = [str(x) for x in pileup_dictionary[snp]]
+            else:
+                continue
+
             genoRefAllele = row[2]
             genoAltAllele = row[3]
-            try: matchingVector = pileup_dictionary[row[0] + '.' + row[1]]
-            except: continue
-            matchingVector = [str(x) for x in matchingVector]
-            if (matchingVector[8] == str(0)): # for alt alleles with 0 reads, force alt allele to be imputed geno alt allele
+
+            # For alt alleles with 0 reads, force alt allele to be imputed geno
+            # alt allele
+            if matchingVector[8] == str(0):
                 matchingVector[10] = genoAltAllele
-            if (matchingVector[9] == str(0)): # for ref alleles with 0 reads, force ref allele to be imputed geno ref allele
+
+            # For ref alleles with 0 reads, force ref allele to be imputed geno
+            # ref allele
+            if matchingVector[9] == str(0):
                 matchingVector[0] = genoRefAllele
+
             postChipRefAllele = matchingVector[0].upper()
-            postChipRefFreq = matchingVector[11]
+            postChipRefFreq   = matchingVector[11]
             postChipAltAllele = matchingVector[10].upper()
-            postChipAltFreq = matchingVector[12]
-            if (postChipRefAllele == genoRefAllele) and (postChipAltAllele == genoAltAllele):
+            postChipAltFreq   = matchingVector[12]
+
+            if postChipRefAllele == genoRefAllele and postChipAltAllele == genoAltAllele:
                 outAllele = postChipRefAllele
                 outfreq = postChipRefFreq
-            elif postChipRefAllele == genoAltAllele and (postChipAltAllele == genoRefAllele):
+            elif postChipRefAllele == genoAltAllele and postChipAltAllele == genoRefAllele:
                 outAllele = postChipAltAllele
                 outfreq = postChipAltFreq
                 linecounter = linecounter +1
             else:
                 outAllele = 'NA'
                 outfreq = 'NA'
-            finalout = row[0] + "\t" + row[1] + "\t" + '\t'.join(matchingVector) + "\t" + str(outAllele) + "\t" + str(outfreq) + "\n"
-            outfile.write(finalout)
-    outfile.close()
+
+            outfile.write(
+                '\t'.join(
+                    [row[0], row[1], '\t'.join(matchingVector),
+                     str(outAllele), str(outfreq)]
+                ) + '\n'
+            )
+
     print("post-frequency calculation DONE")
-    return ()
 
 
-######################################################################################
-# POST.TXT FILE TRIMMING, ADDITION OF HEADER, BED FILE CREATION
-######################################################################################
+###########################################################################
+#      POST.txt file triming, addition of header, BED file creation       #
+###########################################################################
+
 
 def postTrim(prefix_name, trial_depths):
-    headerOUT = open("mpileup.header.txt", 'w')
-    headertemp = 'Chr'+'\t'+'position'+'\t'+'REFallele'+'\t'+'Depth'+'\t'+'Acount'+'\t'+'Ccount'+'\t'+'Gcount'+'\t'+'Tcount'+'\t'+'ALTdepth'+'\t'+'REFDepth'+'\t'+'ALTallele'+'\t'+'REFfreq'+'\t'+'ALTfreq'+'\t'+'POSTallele'+'\t'+'POSTfreq'+'\n'
-    headerOUT.write(headertemp)
-    headerOUT.close()
+    """Tidy the POST frequency outputs."""
 
-    print("File trimming ")
-    os.system("sed '/NA/d' " + prefix_name + "." + str(trial_depths) +  ".POST.txt | cut -f-4,7- > " + prefix_name + "." + str(trial_depths) + ".POSTt.txt")
-    os.system("cat mpileup.header.txt " + prefix_name + "."  + str(trial_depths) + ".POSTt.txt > " + prefix_name + "." + str(trial_depths) + ".POSTth.txt")
-    print(os.system("head " + prefix_name + "." + str(trial_depths) + ".POSTth.txt"))
-    postin = prefix_name + "." + str(trial_depths) + ".POSTt.txt"
-    bedoutfile = prefix_name + "." + str(trial_depths) + ".bed"
-    with open(postin) as openfile, open(bedoutfile, 'w') as bedOUT:
-        for line in openfile:
-            rowtmp = line.rstrip().split('\t')
-            chrom = rowtmp[0]
-            snp = rowtmp[1]
-            startpos = int(snp) - 1
-            OUTrow = str(chrom) + '\t' + str(startpos) + '\t' + str(snp) + '\n'
-            bedOUT.write(OUTrow)
+    with open_zipped("mpileup.header.txt", 'w') as headerOUT:
+        headerOUT.write(
+            '\t'.join(
+                ['Chr', 'position', 'REFallele', 'Depth', 'Acount', 'Ccount',
+                 'Gcount', 'Tcount', 'ALTdepth', 'REFDepth', 'ALTallele',
+                 'REFfreq', 'ALTfreq', 'POSTallele', 'POSTfreq']
+            ) + '\n'
+        )
+
+    # File names
+    prfx = "{}.{}".format(prefix_name, trial_depths)
+    post_fl = "{}.POSTth.txt".format(prfx)
+    bed_fl = "{}.bed".format(prfx)
+
+    print("File trimming")
+
+    # Filter out unneeded columns
+    subprocess.check_call(
+        (
+            "cat mpileup.header.txt <("
+            "sed '/NA/d' {prefix}.POST.txt | cut -f-4,7- "
+            ") > {prefix}.POSTth.txt"
+        ).format(prefix=prfx), shell=True
+    )
+
     print("File trimming DONE")
-    return()
+    print("Writing bed file")
 
-######################################################################################
-# GENOTYPE EXTRACTION OF POSTCALC SNPS
-######################################################################################
+    # Make bed file
+    with open_zipped(post_fl) as openfile, open_zipped(bed_fl, 'w') as bedOUT:
+        openfile.readline()  # Discard header
+        for line in openfile:
+            ln = line.rstrip().split('\t')
+            snp = ln[1]
+            bedOUT.write('\t'.join([ln[0], str(int(snp) - 1), snp]) + '\n')
 
-def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
+    print("Bed file writing complete")
+
+
+###########################################################################
+#                 Genotype Extraction for POST-calc SNPs                  #
+###########################################################################
+
+
+def genoExtract(prefix_name, trial_depths, genosFile, individualslist=None):
     """Filter genotypes by SNP and individual.
 
     First loops through genotypes and filters to a temp file, then transposes,
@@ -196,26 +280,26 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
     ------
     prefix_name : str
     trial_depths : int
-    individualslist : str
-        Path to file of individuals separated by line
     genosFile : str
         Path to genotype file to parse. Must be in the format:
             chrom\\tpos\\tref\\talt\\tgenotypes...
         Genotypes must be in 0/1/2 format, and the file must contain a header
         with the individual names.
         Note: Genotype file *must* be sorted by position.
+    individualslist : str, optional
+        Path to file of individuals to include separated by newlines
     """
     new_prefix = prefix_name + "." + str(trial_depths)
     postdata = new_prefix + ".POSTth.txt"
     out_name = new_prefix + ".genotypes.txt"
-    print("File: ", new_prefix)
-    # Track memory usage
-    process = psutil.Process(os.getpid())
+    print("File prefix used:", new_prefix)
 
-    print("Memory start: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
+    # Track memory usage
+    process = show_mem()
+
     # Get list of sites with POSTfreq data
     print("Getting SNPs from POST data")
-    with open(postdata, 'r') as postin:
+    with open_zipped(postdata, 'r') as postin:
         # Drop first line if it is a header (position is not numberic)
         header = postin.readline().strip().split('\t')
         if header[1].isdigit():
@@ -225,24 +309,27 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
                 line.split('\t') for line in postin.readlines()
             ]
         ]
+    post_snps = frozenset(postlocs)
     l = len(postlocs)
-    postlocs = set(postlocs)
     # The POST data must be unique per SNP, if it isn't we have a big problem
     # somewhere in the earlier steps
-    assert l == len(postlocs)
-    print("Got {} SNPs".format(l))
-    print("Memory SNPs: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
+    assert l == len(post_snps)
 
-    print("Filtering genotypes")
+    print("Got {} SNPs".format(l))
+    show_mem(proc=process)
+
+    done_snps = set()
+    add_to_done = done_snps.add
     extras = 0
     indels = 0
     dups   = 0
+
+    print("Filtering genotypes by SNP")
     print("Time: {}".format(datetime.now()))
     # Geno will have the same number of columns as the POST data has rows but
     # will contain numeric matrix only, one column per SNP, and one row per
     # individual *sorted to match individuals.txt*
-    mat = []
-    with open(genosFile) as genos_in:
+    with open_zipped(genosFile) as genos_in:
         # Parse header
         header = genos_in.readline().strip().split('\t')
         if header[1].isdigit():
@@ -250,32 +337,16 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
                 'Genotype file {} has no header, cannot parse individuals'
                 .format(genosFile)
             )
+        # Extract the individuals from the header
+        inds = header[4:]
 
-        # Check file is sorted
-        pos = genos_in.tell()
-        c = 1000
-        print(
-            "Genotype file must be sorted by position,",
-            "checking first {0} lines".format(c)
-        )
-        lns = []
-        while c:
-            lns.append(int(genos_in.readline().split('\t')[1]))
-            c -= 1
-        assert lns == sorted(lns)
-        print("Genotype file appears properly sorted, parsing.")
-        genos_in.seek(pos)
-
-        # Point a local variable at the method to save lookup time
-        done_snps = set()
-        add_to_done = done_snps.add
         # Parse the file
-        mat  = [header[4:]]
+        gt_dict = {}
         for line in genos_in:
             row = line.strip().split('\t')
             # Filter by SNP
             snp = row[0] + '.' + row[1]
-            if snp not in postlocs:
+            if snp not in post_snps:
                 extras += 1
                 continue
             if snp in done_snps:
@@ -293,11 +364,14 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
                         indels += 1
                         continue
             # Keep only the genotype data, not the position data
-            mat.append(row[4:])
-            # Done
+            gt_dict[snp] = row[4:]
+            # Done by adding this at the end, we can still get duplicates
+            # where the first entry was an indel or something else.
             add_to_done(snp)
+
     print("Genotype filtering complete")
-    print("Memory genos: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
+    show_mem(proc=process)
+
     print("Time: {}".format(datetime.now()))
     print("Dropped {} unneeded SNPs".format(extras))
     print("Dropped {} indels".format(indels))
@@ -306,61 +380,282 @@ def genoExtract(prefix_name, trial_depths, individualslist, genosFile):
     print("Checking all POST SNPs matched")
     if len(postlocs) != len(done_snps):
         err_file = new_prefix + ".missing.snps"
-        with open(err_file, "w") as fout:
+        with open_zipped(err_file, "w") as fout:
             fout.write(
-                '\n'.join(sorted([i for i in postlocs if i not in done]))
+                '\n'.join(sorted([i for i in postlocs if i not in done_snps]))
             )
         raise Exception(
             "{} SNPs in POST were not in the genotype file, written to {}"
-            .format(len(postlocs)-len(done), err_file)
+            .format(len(postlocs)-len(done_snps), err_file)
         )
     print("Done")
 
-    print("Transposing to dictionary")
-    trans = {i[0]: i[1:] for i in zip(*mat)}
-    with open(out_name, 'w') as fout:
+    # Get individual locations
+    if individualslist:
+        print(
+            "Getting individuals from individuals file ({})."
+            .format(individualslist)
+        )
+        with open_zipped(individualslist) as fin:
+            individuals = [i.strip() for i in fin.read().strip().split('\n')]
+        ind_locs = []
+        missing = []
+        for ind in individuals:
+            if ind in inds:
+                ind_locs.append(inds.index(ind))
+            else:
+                missing.append(ind)
+        if len(missing) > 0:
+            sys.stderr.write(
+                'The following individuals are missing '
+                'from the genotype file:\n'
+            )
+            sys.stderr.write('\n'.join(missing))
+            raise IndexError('Missing some individuals from genotypes')
+        assert len(ind_locs) == len(individuals)
+    else:
+        print('No individuals file provided, keeping all individuals')
+        ind_locs = None
+
+    print("Creating sorted matrix of only required individuals")
+    mat = []
+    for snp in postlocs:
+        if ind_locs:
+            gt = gt_dict[snp]
+            mat.append([gt[i] for i in ind_locs])
+        else:
+            mat.append(gt_dict[snp])
+    print("Done")
+    show_mem(proc=process)
+    del gt_dict
+    print("Number of individuals included: {}".format(len(mat[0])))
+
+    print("Transposing and writing")
+    with open_zipped(out_name, 'w') as fout:
         fout.write(
             '\n'.join(
                 ['\t'.join(i) for i in zip(*mat)]
             )
         )
-    print("Memory transpose: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
-    del mat
-    print("Memory transpose tidy: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
     print("Done")
+    show_mem(proc=process)
+    del mat
 
-    print("Filtering by individual and writing")
-    with open(individualslist , 'r') as indv, open(out_name, 'w') as fout:
-        for ind in indv:
-            ind = ind.strip()
-            if ind in trans:
-                fout.write('\t'.join(trans[ind]) + '\n')
-            else:
-                print('Missing:', ind)
-    print("Memory End: {:.2f}GB".format(process.memory_info().rss/1024/1024/1024))
+    print("Genotype filtering complete")
+    show_mem(proc=process)
 
 
-######################################################################################
-# REGRESSION WITH Z-SCORE, P-VALUE
-######################################################################################
+###########################################################################
+#                  Regressuion with Z-score and P-value                   #
+###########################################################################
+
 
 def regPVAL(prefix_name, trial_depths, numIndv):
+    """Run the actual regression R code."""
     new_prefix = prefix_name + "." + str(trial_depths)
     postdata = new_prefix + ".POSTth.txt"
     genosout_name = new_prefix + ".genotypes.txt"
+
     ### make sure location of R script is correct
     r_script = os.path.join(os.path.dirname(__file__), 'regression_qtls.R')
     if not os.path.isfile(r_script):
         raise OSError('File not found: {}'.format(r_script))
-    subprocess.check_call(['Rscript', r_script, postdata, genosout_name, new_prefix, numIndv])
-    os.system("rm " +prefix_name+ "1.R")
+
+    subprocess.check_call(
+        ['Rscript', r_script, postdata, genosout_name, new_prefix, numIndv]
+    )
+
     print("regression DONE")
-    return
 
 
-##################
-# COMMANDS #
-##################
+###########################################################################
+#                              Tidy Results                               #
+###########################################################################
+
+orig_headers = [
+    'Chr', 'position', 'REFallele', 'Depth', 'Acount', 'Ccount', 'Gcount',
+    'Tcount', 'ALTdepth', 'REFDepth', 'ALTallele', 'REFfreq', 'ALTfreq',
+    'POSTallele', 'POSTfreq', 'prechipfreq', 'pvalue', 'zvalue',
+    'prevar', 'postvar', 'SNPpostfreq', 'SNPprefreq'
+]
+new_headers  = [
+    'chrom', 'position', 'ref', 'depth', 'a_count', 'c_count', 'g_count',
+    't_count', 'alt_depth', 'ref_depth', 'alt', 'ref_freq', 'alt_freq',
+    'post_allele', 'post_freq', 'pre_freq', 'p_value', 'z_value',
+    'pre_variance', 'post_variance', 'snp_postfreq', 'snp_prefreq'
+]
+final_headers = [
+    'chrom', 'position', 'rsid', 'open_allele', 'closed_allele',
+    'pre_freq', 'post_freq', 'pre_variance', 'post_variance', 'beta',
+    'p_value', 'z_value', 'ref', 'alt', 'depth', 'ref_depth',
+    'alt_depth', 'ref_freq', 'alt_freq', 'snp_postfreq', 'snp_prefreq',
+    'a_count', 'c_count', 'g_count', 't_count'
+]
+float_dtypes = {
+    'position': 'object',
+    'REFfreq': 'float128',
+    'ALTfreq': 'float128',
+    'POSTfreq': 'float128',
+    'prechipfreq': 'float128',
+    'pvalue': 'float128',
+    'zvalue': 'float128',
+    'prevar': 'float128',
+    'postvar': 'float128',
+    'SNPpostfreq': 'float128',
+    'SNPprefreq': 'float128',
+}
+
+
+def parse_regression(regfile, textfile=None, pandasfile=None, bed=None):
+    """Parse a regression file into a pandas datafram.
+
+    Optionally output either pickled panda or textfile.
+
+    For all files, gzipped files or open file handle are permissable.
+
+    Parameters
+    ----------
+    regfile : file name
+        Tab delimited output from regression, header strictly enforced
+    textfile : file name, optional
+        Path to write tab delimited formatted output
+    pandasfile : file name, optional
+        Path to write pickled pandas dataframe
+    bed : file name, optional
+        Path to a bed file that contains rsids
+
+    Returns
+    -------
+    pandas.DataFrame
+        Parsed DataFrame
+    """
+    import numpy as np
+    import pandas as pd
+    print('Loading regression file')
+    df = pd.read_csv(regfile, sep='\t', low_memory=False, dtype=float_dtypes,
+                     float_precision=128)
+    assert df.columns.tolist() == orig_headers
+    df.columns = new_headers
+    # Set the index to chr.position
+    df['idx'] = df.chrom.astype(str) + '.' + df.position.astype(str)
+    df = df.set_index('idx', drop=True)
+
+    # Add rsID if possible
+    if bed:
+        print('Loading rsids')
+        df['rsid'] = bed_to_series(bed)
+    else:
+        print('No bed file, all rsids will be "Unknown"')
+        df['rsid'] = 'Unknown'
+
+    # Sort the data by position (default is by best pvalue)
+    print('Sorting')
+    df = df.sort_values(['chrom', 'position'])
+
+    # Force datatypes and uppercase
+    df['position'] = df.position.astype(int)
+    for i in ['ref', 'alt', 'post_allele']:
+        df[i] = df[i].str.upper()
+    # Add the beta
+    df['beta'] = df.post_freq - df.pre_freq
+
+    # Add open and closed
+    print('Calculating open/closed')
+    df['open_allele'] = np.where(df.post_freq > df.pre_freq, df.post_allele, df.alt)
+    df['closed_allele'] = np.where(df.post_freq > df.pre_freq, df.alt, df.post_allele)
+    df['open_allele'] = np.where(df.post_freq == df.pre_freq, 'NA', df.open_allele)
+    df['closed_allele'] = np.where(df.post_freq == df.pre_freq, 'NA', df.closed_allele)
+
+    # Sort columns
+    print('Adjusting columns')
+    df = df[final_headers]
+
+    # Write outputs
+    if pandasfile:
+        print('Writing pickled panda to %s', pandasfile)
+        df.to_pickle(pandasfile)
+    if textfile:
+        print('Writing parsed dataframe to %s', textfile)
+        df.to_csv(textfile, sep='\t')
+
+    return df
+
+
+###########################################################################
+#                                 Helpers                                 #
+###########################################################################
+
+
+def bed_to_series(bedfile):
+    """Convert a bed file to a series of chr.pos->name."""
+    import pandas as pd
+    args = dict(sep='\t', usecols=[0, 2, 3])
+    with open_zipped(bedfile) as fin:
+        if not fin.readline().startswith('#'):
+            args['header'] = None
+    print('Reading in bed file')
+    bed = pd.read_csv(bedfile, **args)
+    bed.columns = ['chrom', 'pos', 'name']
+    bed['idx'] = bed.chrom.astype(str) + '.' + bed.pos.astype(str)
+    bed = bed.drop_duplicates('idx', keep=False)
+    bed = bed.set_index('idx', drop=True)
+    print('Parsed %s SNPs', len(bed))
+    return bed.name
+
+
+def show_mem(proc=None):
+    """Print memory usage."""
+    if not psutil:
+        return None
+    if not proc:
+        proc = psutil.Process(os.getpid())
+    print(
+        "Memory: {:.2f}GB"
+        .format(proc.memory_info().rss/1024/1024/1024)
+    )
+    return proc
+
+
+def open_zipped(infile, mode='r'):
+    """Return file handle of file regardless of compressed or not.
+
+    Returns already opened files unchanged
+    Text mode automatic for compatibility with python2.
+    """
+    # Return already open files
+    if hasattr(infile, 'write'):
+        return infile
+
+    # Make text mode automatic
+    if len(mode) == 1:
+        mode = mode + 't'
+
+    # Refuse to handle non-strings that aren't files.
+    if not isinstance(infile, str):
+        raise ValueError("i cannot open a filename that isn't a string.")
+
+    # Treat '-' appropriately
+    if infile == '-':
+        if 'w' in mode:
+            return sys.stdout
+        return sys.stdin
+
+    # If possible open zipped files
+    if infile.endswith('.gz'):
+        return _gzip.open(infile, mode)
+    if infile.endswith('.bz2'):
+        if hasattr(_bz2, 'open'):
+            return _bz2.open(infile, mode)
+        return _bz2.bz2file(infile, mode)
+
+    # Fall back on regular open
+    return open(infile, mode)
+
+
+###########################################################################
+#                          Command Line Parsing                           #
+###########################################################################
+
 
 def main():
     """Run as a script."""
@@ -379,12 +674,12 @@ def main():
     shared_cmds = argparse.ArgumentParser(add_help=False)
     run_opts = shared_cmds.add_argument_group("Run Options")
     run_opts.add_argument(
-        '-r', '--readDepth', type=int, dest='trial_depths', default=20,
-        help='minimum read depth per variant'
-    )
-    run_opts.add_argument(
         '-F', '--SampleName', dest='prefix_name', default='cis_var',
         help='sample/population name'
+    )
+    run_opts.add_argument(
+        '-r', '--readDepth', type=int, dest='trial_depths', default=20,
+        help='minimum read depth per variant'
     )
 
 
@@ -433,18 +728,18 @@ def main():
     )
     geno_cmd = geno_cmd_grp.add_argument_group("Genotype Options (Required)")
     geno_cmd.add_argument(
-        '-i', '--individualsFile', required=True, dest='individualslist',
-        help='list of individuals matching genotype matrix; one indv per line'
-    )
-    geno_cmd.add_argument(
         '-g', '--genoFile', required=True, dest='genosFile',
         help='The genotypes file'
     )
+    geno_cmd.add_argument(
+        '-i', '--individualsFile', required=False, dest='individualslist',
+        help='list of individuals matching genotype matrix; one indv per line'
+    )
 
-    # geno
+    # Regression
     qtls_cmd_grp = modes.add_parser(
         'qtls', description="Run the regression",
-        parents=[shared_cmds],  aliases=['q', 'regression', 'r'],
+        parents=[shared_cmds], aliases=['q', 'regression', 'r'],
         help="Run the regression",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -454,17 +749,65 @@ def main():
         help='The number of individuals in the pool'
     )
 
+    # Tidy
+    tidy_cmd = modes.add_parser(
+        'tidy', description="Tidy up regression, call open/closed",
+        parents=[shared_cmds],
+        help="Tidy up regression, call open/clsoed", aliases=['t'],
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    inputs  = tidy_cmd.add_argument_group('inputs')
+    outputs = tidy_cmd.add_argument_group('outputs')
+    inputs.add_argument('-b', '--bedfile',
+                        help="BED file to extract rsIDs from (optional)")
+    outputs.add_argument('-t', '--textfile',
+                         help="Parsed output (Default: STDOUT)")
+    outputs.add_argument('-p', '--pandasfile',
+                         help="Parsed dataframe")
+
+
     args = parser.parse_args()
 
-    if args.inputCommand == 'mpileup':
-        mpileup(args.allCHRfasta, args.mpileupBEDfile, args.sortedBam, args.prefix_name)
-    elif args.inputCommand == 'post':
+    if args.inputCommand in ['mpileup', 'm']:
+        mpileup(
+            args.allCHRfasta, args.mpileupBEDfile,
+            args.sortedBam, args.prefix_name
+        )
+
+    elif args.inputCommand in ['post', 'p']:
         postcalc(args.prefix_name, args.trial_depths, args.allelesFileName)
         postTrim(args.prefix_name, args.trial_depths)
-    elif args.inputCommand == 'geno':
-        genoExtract(args.prefix_name, args.trial_depths, args.individualslist, args.genosFile)
-    elif args.inputCommand == 'qtls':
+
+    elif args.inputCommand in ['geno', 'g']:
+        genoExtract(
+            args.prefix_name, args.trial_depths,
+            args.genosFile, args.individualslist
+        )
+
+    elif args.inputCommand in ['qtls', 'q', 'regression', 'r']:
         regPVAL(args.prefix_name, args.trial_depths, args.numIndv)
+
+    elif args.inputCommand in ['tidy', 't']:
+        prefix = args.prefix_name + '.' + str(args.trial_depths)
+        ifl = prefix + '.total.txt'
+        ofl = args.textfile if args.textfile else sys.stdout
+        if args.notext:
+            if not args.pandasfile:
+                sys.stderr.write('Pandas file required in notext mode.\n')
+                sys.stderr.write(parser.format_help() + '\n')
+                return 1
+            parse_regression(ifl, pandasfile=args.pandasfile, bed=args.bedfile)
+        else:
+            parse_regression(
+                ifl, textfile=ofl, pandasfile=args.pandasfile,
+                bed=args.bedfile
+            )
+
+    else:
+        sys.stderr.write('Unrecognized command {}'.format(args.inputCommand))
+        parser.print_help(file=sys.stderr)
+        return 2
+
 
 if __name__ == '__main__' and '__file__' in globals():
     sys.exit(main())
