@@ -17,14 +17,10 @@ import os as _os
 import sys as _sys
 import bz2 as _bz2
 import gzip as _gzip
+import time as _time
 import subprocess as _sub
 import argparse as _argparse
 import multiprocessing as _mp
-
-try:
-    import fyrd
-except ImportError:
-    fyrd = None
 
 
 EXPECTED_HEADER = [
@@ -196,7 +192,8 @@ def _vcf_file(vcf, inds, ind_list, gti, pos, log):
 
 def bed_file(bed, check_header=None, ind_list=None,
              get_header=False, get_inds=False, log=_sys.stderr):
-    """BED file iterator with goodies
+    """BED file iterator for custom bed format, better to use VCF.
+
 
     Parameters
     ----------
@@ -246,7 +243,7 @@ def bed_file(bed, check_header=None, ind_list=None,
 
 
 def _bed_file(bed, inds, ind_list, pos, log):
-    """Iterator for BED."""
+    """Iterator for custom BED, better to use VCF."""
 
     # Get individual locations for lookup/filter
     ind_pos = []
@@ -333,7 +330,7 @@ def parse_gt(gt):
 
 
 def parse_files(geno_files, geno_output, individuals, skip_indels=True,
-                log_dir='.', par_mode='fyrd'):
+                log_dir='.', cores=1):
     """Loop through all geno files in parallel and then recombine.
 
     Parameters
@@ -349,9 +346,8 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
         Don't include rows with indels
     log_dir : str, optional
         Directory to write parse statistics to
-    par_mode : str, optional
-        Either 'serial', 'fyrd', or an integer core count for local
-        parallelization.
+    cores : int, optional
+        Number of cores to use when parsing.
     """
     if not isinstance(geno_files, list):
         raise ValueError('genotype files must be a list')
@@ -385,14 +381,11 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
     # Parse files
     count = 0
     print('Looping through VCFs')
-    if isinstance(par_mode, int):
-        mode = 'mp'
-        pool = _mp.Pool(par_mode)
-    else:
-        mode = par_mode
-    jobs = []
     ourdir, us = _os.path.split(__file__)
     us = us.split('.')[0]
+    jobs = []
+    if cores > 1:
+        pool = mp.Pool(cores)
     for geno in geno_files:
         log_fl = _os.path.join(log_dir, _os.path.basename(geno) + '.log')
         count += 1
@@ -400,56 +393,21 @@ def parse_files(geno_files, geno_output, individuals, skip_indels=True,
         if geno_output.endswith('gz'):
             ofl = ofl + '.gz'
         args = (geno, ofl, header, inds, skip_indels, log_fl)
-        if mode == 'fyrd':
-            jobs.append(
-                (
-                    ofl,
-                    fyrd.submit(
-                        parse_file, args,
-                        time="04:00:00", mem='12GB', syspaths=[ourdir],
-                        scriptpath=log_dir, outpath=log_dir, clean_files=False,
-                        clean_outputs=False, partition='high_priority',
-                        imports=[
-                            'from {} import *'.format(us),
-                            'from {} import _open_zipped'.format(us),
-                            'from {} import _vcf_file'.format(us)
-                        ]
-                    )
-                )
-            )
-        elif mode == 'mp':
-            jobs.append(
-                (
-                    ofl,
-                    pool.apply_async(
-                        parse_file, args
-                    )
-                )
-            )
+        if cores > 1:
+            jobs.append([ofl, pool.apply_async(parse_file, args)])
         else:
             parse_file(*args)
             jobs.append((ofl, None))
 
-    j = [i[1] for i in jobs]
-
-    if mode == 'fyrd':
-        fyrd.wait(j)
-    elif mode == 'mp':
-        for i in j:
-            i.wait()
-
-    print('Checking jobs')
-
-    # Check jobs
-    failed = []
-    if mode == 'fyrd':
+    print('Waiting for jobs to complete')
+    if cores > 1:
         for ofl, job in jobs:
-            job.update()
-            if not job.state == 'completed':
-                print('Job failed with state: {}\n{}'.format(job.state, job))
-                failed.append((ofl, job))
+            job.wait()
+        _time.sleep(2)
 
+    print('Checking output files')
     fls = [i[0] for i in jobs]
+    failed = []
     for fl in fls:
         if not _os.path.isfile(fl) or not _os.path.isfile(fl + '.done'):
             print("Done file not created for {}".format(fl))

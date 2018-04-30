@@ -1,12 +1,35 @@
 #!/usr/bin/R
 
-
-#====================================================================================
-#
 #        AUTHOR: Ashley Tehranchi, tehranchi576@gmail.com
 #  ORGANIZATION: Stanford University
-#
-#====================================================================================
+
+ldCalculation <- function(sig, outfile) {
+
+  # Max distance between two SNPs to use for FDR calculation
+  fdr.window = 200000
+
+  r2.sig = vector("numeric", length=nrow(sig))
+  holdnum = nrow(sig)-1
+  maxcol = ncol(sig)
+
+  # If two SNPs are within FDR window (default 200 kb) do correlation between
+  # their genotypes Otherwise just set the r-squared to 0
+  for (i in 1:holdnum) {
+      if (sig[i,2] - sig[i+1,2] < fdr.window) {
+            r2.sig[i] <- cor(t(sig[i,20:maxcol]), t(sig[i+1,20:maxcol]), method="pearson")
+    }
+    else{ r2.sig[i] <- 0}
+  }
+
+  # Add r-squared
+  cat("Adding r-squared\n"); flush.console()
+  sig$r2 <- (r2.sig)^2
+  ldfileOUTsig = sig[, c("Chr", "position", "r2")]
+  ldfileOUTsigFinal = ldfileOUTsig[complete.cases(ldfileOUTsig),]
+
+  cat("Writing out LD data\n"); flush.console()
+  write.table(ldfileOUTsigFinal, file=outfile, sep="\t", quote=F, row.names=F, col.names=T)
+}
 
 linearRegression <- function(pd, gt, tmppfx, indiv) {
 
@@ -18,14 +41,11 @@ linearRegression <- function(pd, gt, tmppfx, indiv) {
   MAF.low = 0.02
   MAF.high = 1-MAF.low
 
-  # P-Value
+  # P-Value, used to split sig/nonsig for LD calculation
   P = 0.05
 
   # Force postfreq to be between eps and 1-eps (e.g 0.0001 and 0.9999)
   eps = 0.0001
-
-  # Max distance between two SNPs to use for FDR calculation
-  fdr.window = 200000
 
   # Figure sizing/format defautls
   fig.width  = 1200
@@ -152,57 +172,27 @@ linearRegression <- function(pd, gt, tmppfx, indiv) {
   post$SNPpostfreq <- 1 - post$POSTfreq
   post$SNPprefreq <- 1 - post$prechipfreq
 
-  cat("Splitting data by significance\n"); flush.console()
-  combined = cbind(post, genotypes)
-
-  # Split data based on significance
-
-  sig = subset(combined, pvalue <= P)
-  nonsig = subset(combined, pvalue > P)
-
   ##############################################
   #  LD Calculation for Significance Estimate  #
   ##############################################
 
   cat("LD Calculation\n"); flush.console()
-  r2.sig = vector("numeric", length=nrow(sig))
-  holdnum = nrow(sig)-1
-  maxcol = ncol(sig)
+  combined = cbind(post, genotypes)
 
-  # If two SNPs are within FDR window (default 200 kb) do correlation between their genotypes
-  # Otherwise just set the r-squared to 0
-  for (i in 1:holdnum){
-      if (sig[i,2] - sig[i+1,2] < fdr.window) {
-            r2.sig[i] <- cor(t(sig[i,20:maxcol]), t(sig[i+1,20:maxcol]), method="pearson")
-    }
-    else{ r2.sig[i] <- 0}
-  }
-  # Add r-squared
-  cat("Adding r-squared to significant SNPs\n"); flush.console()
-  sig$r2 <- (r2.sig)^2
-  ldfileOUTsig = sig[, c("Chr", "position", "r2")]
-  ldfileOUTsigFinal = ldfileOUTsig[complete.cases(ldfileOUTsig),]
+  sig = subset(combined, pvalue <= P)
   totaloutsig = paste(tmppfx, ".sigLD", sep="")
-  write.table(ldfileOUTsigFinal, file=totaloutsig, sep="\t", quote=FALSE, row.names=FALSE, col.names=T)
+  ldCalculation(sig, totaloutsig)
+  rm(sig)
 
   ########################################
   #  LD Calculation for Non-Significant  #
   ########################################
 
-  r2.nonsig = vector("numeric",length=nrow(nonsig))
-  holdnum = nrow(nonsig)-1
-  maxcol = ncol(nonsig)
-  for (i in 1:holdnum){
-      if (nonsig[i,2] - nonsig[i+1,2] < fdr.window) {
-            r2.nonsig[i] <- cor(t(nonsig[i,20:maxcol]), t(nonsig[i+1,20:maxcol]), method="pearson")
-    }
-    else{ r2.nonsig[i] <- 0}
-  }
-  nonsig$r2 <- (r2.nonsig)^2
-  ldfileOUTnonsig = nonsig[, c("Chr", "position", "r2")]
-  ldfileOUTnonsigFinal = ldfileOUTnonsig[complete.cases(ldfileOUTnonsig),]
+  nonsig = subset(combined, pvalue > P)
   totaloutnonsig = paste(tmppfx, ".nonsigLD", sep="")
-  write.table(ldfileOUTnonsigFinal, file= totaloutnonsig, sep="\t", quote=FALSE, row.names=FALSE, col.names=T)
+  ldCalculation(nonsig, totaloutnonsig)
+  rm(nonsig)
+  rm(combined)
 
   ###################
   #  Write Outputs  #
@@ -224,7 +214,7 @@ linearRegression <- function(pd, gt, tmppfx, indiv) {
   sortedBed = bed[with(bed,order(Chr, start, position)),]
   finaloutFile = paste(tmppfx, ".total.txt", sep="")
   finalcoeffs = paste(tmppfx, ".coefficients.txt", sep="")
-  finalbed = paste(tmppfx, ".bed", sep="")
+  finalbed = paste(tmppfx, ".final.bed", sep="")
   write.table(x, file=finaloutFile, sep="\t", quote=F, row.names=F, col.names=T)
   write.table(sortedBed, file=finalbed, sep="\t", quote=F, row.names=F, col.names=F)
   write.table(all.coeffs, file=finalcoeffs, sep="\t", quote=F, row.names=F, col.names=T)

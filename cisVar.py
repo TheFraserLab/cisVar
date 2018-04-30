@@ -41,6 +41,7 @@ try:
 except ImportError:
     psutil = None
 
+
 ############################################################################
 # mpileup BAM files with hg19 masked genome with blacklist regions removed #
 ############################################################################
@@ -125,7 +126,7 @@ def postcalc(prefix_name, trial_depths, allelesFileName):
                 # Adjusts total_depth/cov to remove third alleles/sequencing
                 # errors
                 snp_depth = REFdepth + ALTdepth
-                rows[3] = str(depth)
+                rows[3] = str(snp_depth)
 
                 if index == 0:
                     ALTallele = 'A'
@@ -240,13 +241,12 @@ def postTrim(prefix_name, trial_depths):
     print("File trimming")
 
     # Filter out unneeded columns
-    subprocess.check_call(
-        (
-            "cat mpileup.header.txt <("
-            "sed '/NA/d' {prefix}.POST.txt | cut -f-4,7- "
-            ") > {prefix}.POSTth.txt"
-        ).format(prefix=prfx), shell=True
-    )
+    script = (
+        "cat mpileup.header.txt <("
+        "sed '/NA/d' {prefix}.POST.txt | cut -f-4,7- "
+        ") > {prefix}.POSTth.txt"
+    ).format(prefix=prfx)
+    subprocess.check_call('bash -c "{}"'.format(script), shell=True)
 
     print("File trimming DONE")
     print("Writing bed file")
@@ -572,10 +572,10 @@ def parse_regression(regfile, textfile=None, pandasfile=None, bed=None):
 
     # Write outputs
     if pandasfile:
-        print('Writing pickled panda to %s', pandasfile)
+        print('Writing pickled panda to', pandasfile)
         df.to_pickle(pandasfile)
     if textfile:
-        print('Writing parsed dataframe to %s', textfile)
+        print('Writing parsed dataframe to', textfile)
         df.to_csv(textfile, sep='\t')
 
     return df
@@ -791,17 +791,10 @@ def main():
         prefix = args.prefix_name + '.' + str(args.trial_depths)
         ifl = prefix + '.total.txt'
         ofl = args.textfile if args.textfile else sys.stdout
-        if args.notext:
-            if not args.pandasfile:
-                sys.stderr.write('Pandas file required in notext mode.\n')
-                sys.stderr.write(parser.format_help() + '\n')
-                return 1
-            parse_regression(ifl, pandasfile=args.pandasfile, bed=args.bedfile)
-        else:
-            parse_regression(
-                ifl, textfile=ofl, pandasfile=args.pandasfile,
-                bed=args.bedfile
-            )
+        parse_regression(
+            ifl, textfile=ofl, pandasfile=args.pandasfile,
+            bed=args.bedfile
+        )
 
     else:
         sys.stderr.write('Unrecognized command {}'.format(args.inputCommand))
