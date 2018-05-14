@@ -20,7 +20,7 @@ import gzip as _gzip
 import time as _time
 import subprocess as _sub
 import argparse as _argparse
-import multiprocessing as _mp
+import multiprocessing as mp
 
 
 EXPECTED_HEADER = [

@@ -21,12 +21,16 @@ In addition, the following data can be helpful:
 - A list of individuals to filter genotypes with (one newline separated file of
     individuals per pool)
 - A file with ref and alt alleles for your SNPs of interest, to modify those in
-    the genotype VCF files
+    the genotype VCF files (BED/VCF/txt)
+- A file to limit the SNPs to consider to a subset of those in the VCF
+    (BED/VCF/txt)
 
 Example pipeline:
 
 ```shell
-cisVar.py mpileup -F SampleName -f fastaFile -p mpileupBEDfile -B sortedBam
+cisVar.py prep -F SampleName -i individuals.txt.gz --chrom-format chr /path/to/geno/*vcf.gz
+
+cisVar.py mpileup -F SampleName -f fastaFile -B sortedBam
 
 cisVar.py post -F SampleName -r readDepth -a allelesFile
 
