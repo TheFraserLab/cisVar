@@ -102,6 +102,9 @@ def prep_files(vcf_files, prefix_name, inds=None, limit_file=None,
         chrom, position (base-1), ref (upper), alt (upper), genotypes (0/1/2)
     prefix.locations.bed.gz
         A BED file of all of the locations to be tested, including names
+    prefix.individuals.txt.gz
+        A newline separated file of individuals, replicates inds if provided,
+        overwrites even if already exists.
     """
     if isinstance(vcf_files, str):
         vcf_files = [vcf_files]
@@ -134,6 +137,11 @@ def prep_files(vcf_files, prefix_name, inds=None, limit_file=None,
     if not inds:
         inds = geno_file(vcf_files[0], get_inds=True)
     final_inds = list(inds)
+
+    # Write the final individuals, order preserved
+    ind_output = '{}.individuals.txt.gz'.format(prefix_name)
+    with open_zipped(ind_output, 'w') as fout:
+        fout.write('\n'.join(final_inds))
 
     # Primary parsing
     sys.stderr.write("Begining genotype file parse\n")
