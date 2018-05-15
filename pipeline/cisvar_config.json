@@ -1,0 +1,15 @@
+{
+    "name": "cis_var",
+    "read_depth": 20,
+    "bams": "../{sample}_remap_hg19.bwt2pairs.merged.sorted.bam",
+    "samples": ["merged_reads"],
+    "cisvar": "$HOME/code/cisVar",
+    "vcfs": "/godot/quertermous/PooledHiChip/genotype/67total/*.vcf.comm.gz",
+    "genome_fa": "/godot/genomes/human/hg19/hg19.fa",
+    "alleles": "{sample}.alleles.txt.gz",
+    "locs": "{sample}.locations.bed.gz",
+    "inds": "{sample}.individuals.txt.gz",
+    "max_cores": 16,
+    "chrom_format": "chr",
+    "sort_vcfs": 1
+}

@@ -1,0 +1,384 @@
+# -*- coding: utf-8 -*-
+"""
+Run cisVar
+
+Make sure input BAMs have been filtered by Hornet.
+"""
+import os
+import json
+from glob import glob
+from textwrap import dedent
+
+import wget
+
+#######################################################################
+#                              Edit Here                              #
+#######################################################################
+
+# Pick a config for your environment
+configfile: "cisvar_config.json"
+
+# Name for this run
+name = config['name']
+
+# Software locations
+cisvar = os.path.expandvars(config['cisvar'])  # https://github.com/TheFraserLab/cisVar
+
+# Samples, either a list or a dictionary, dictionary allows sample: group, where group
+# is used for genotype and individuals files
+# Can be a separate json file
+samples = config['samples']
+if isinstance(samples, str) and os.path.isfile(config['samples']):
+    with open(config['samples']) as fin:
+        samples = json.load(fin)
+
+# Read depth
+read_depth = config['read_depth']
+
+# Note, none of the below files are required, if they don't match anything,
+# they are ignored. They can include {sample} inside the string.
+alleles = config['alleles']  # Specify alleles in VCF or BED format to override those in vcfs
+locs = config['locs']  # Only include these locations
+inds = config['inds']  # Limit to these individuals, in this order
+
+# VCFs
+vcfs = config['vcfs']
+if isinstance(vcfs, str):
+    vcfs = sorted(glob(os.path.expandvars(config['vcfs'])))
+
+# VCF sorting, only use if your vcf(s) are separated by chromosome and the
+# chromosomes are in chr# format. Controlled by sort_vcfs in config file.
+chrom = re.compile(r'chr([0-9mMxXyYtT]+)')
+def k(s):
+    "Sort by chrom."
+    if chrom.search(s):
+        s = chrom.findall(s)[0]
+    else:
+        print(s)
+        raise ValueError("Couldn't find 'chr' string in vcf {}".format(s))
+    if s.isdigit():
+        s = int(s)
+    elif s.upper() == 'X':
+        s = 30
+    elif s.upper() == 'Y':
+        s = 31
+    elif 'M' in s.upper():
+        s = 32
+    else:
+        s = 99
+    return s
+
+if config['sort_vcfs'] and len(vcfs) > 1:
+    vcfs = list(sorted([i for i in vcfs if 'chr' in i], key=k))
+
+# Only the prep step is inherently parallel
+cores = len(vcfs)
+max_cores = config['max_cores']
+cores = cores if cores <= max_cores else max_cores
+
+
+###############################################################################
+#                             Pre-Defined Scripts                             #
+###############################################################################
+
+# For use with modules
+module = dedent(
+    """\
+    module () {
+        eval $($LMOD_CMD bash "$@")
+        [ $? = 0 ] && eval $(${LMOD_SETTARG_CMD:-:} -s sh)
+    }"""
+)
+
+# At the start of all scripts
+script_prep = dedent(
+    """\
+    {module}
+    module load fraserconda
+    """
+).format(module=module)
+
+# After script prep for R based rules
+R_prep = dedent(
+    """\
+    module load R
+    """
+)
+
+###############################################################################
+#                                   Targets                                   #
+###############################################################################
+
+wildcard_constraints:
+    name="[^\.]+",
+    sample="[^\.]+",
+    depth="[^\.]+",
+    pop="[^\.]+"
+
+localrules: all, get_cisVar, genotypes
+
+
+# Make various inputs optional, only for prep step
+ruleorder: prep_full > prep_no_alleles > prep_no_locs
+
+
+rule all:
+    input:
+        expand(
+            '{name}.{sample}.{depth}.regression.txt',
+            name=name, sample=samples, depth=read_depth
+        ),
+        expand(
+            '{name}.{sample}.{depth}.total.txt.prepost.png',
+            name=name, sample=samples, depth=read_depth
+        ),
+        expand(
+            '{name}.{sample}.{depth}.regression.pd',
+            name=name, sample=samples, depth=read_depth
+        ),
+        expand(
+            '{name}.{sample}.{depth}.genotypes.txt',
+            name=name, sample=samples, depth=read_depth
+        )
+    threads:
+        1
+    resources:
+        mem_mb=500
+    params:
+        time="48:00:00"
+
+
+rule genotypes:
+    input:
+        expand(
+            '{name}.{sample}.{depth}.genotypes.txt',
+            name=name, sample=samples, depth=read_depth
+        )
+
+
+###############################################################################
+#                                   cisVar                                    #
+###############################################################################
+
+
+# Locs, inds, and alleles are optional and can be removed
+rule prep_full:
+    input:
+        vcfs=ancient(vcfs),
+        alls=ancient(alleles),
+        locs=ancient(locs),
+        inds=ancient(inds)
+    output:
+        '{name}.{sample}.genotypes.txt.gz',
+        '{name}.{sample}.individuals.txt.gz',
+        '{name}.{sample}.locations.bed.gz'
+    threads:
+        cores
+    resources:
+        mem_mb=20000
+    params:
+        time="30:00:00",
+        chrom_fmt=config['chrom_format']
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            python3 {cisvar}/cisVar.py mpileup -F {name}.{wildcards.sample} \\
+            -a {input.alls} -i {input.inds} -l {input.locs} \\
+            --chrom-format {params.chrom_fmt} -c {threads} {input.vcfs}
+            """
+        )
+
+rule prep_no_alleles:
+    input:
+        vcfs=ancient(vcfs),
+        locs=ancient(locs),
+        inds=ancient(inds)
+    output:
+        '{name}.{sample}.genotypes.txt.gz',
+        '{name}.{sample}.individuals.txt.gz',
+        '{name}.{sample}.locations.bed.gz'
+    threads:
+        cores
+    resources:
+        mem_mb=20000
+    params:
+        time="30:00:00",
+        chrom_fmt=config['chrom_format']
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            python3 {cisvar}/cisVar.py mpileup -F {name}.{wildcards.sample} \\
+            -i {input.inds} -l {input.locs} \\
+            --chrom-format {params.chrom_fmt} -c {threads} {input.vcfs}
+            """
+        )
+
+rule prep_no_locs:
+    input:
+        vcfs=ancient(vcfs),
+        inds=ancient(inds)
+    output:
+        '{name}.{sample}.genotypes.txt.gz',
+        '{name}.{sample}.individuals.txt.gz',
+        '{name}.{sample}.locations.bed.gz'
+    threads:
+        cores
+    resources:
+        mem_mb=20000
+    params:
+        time="30:00:00",
+        chrom_fmt=config['chrom_format']
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            python3 {cisvar}/cisVar.py prep -F {name}.{wildcards.sample} \\
+            -i {input.inds} \\
+            --chrom-format {params.chrom_fmt} -c {threads} {input.vcfs}
+            """
+        )
+
+
+rule mpileup:
+    input:
+        bam=ancient(config['bams']),  # Must have {sample} in the json
+        bed='{name}.{sample}.locations.bed.gz',
+        fasta=ancient(os.path.expandvars(config['genome_fa']))
+    output:
+        '{name}.{sample}.mpileup.txt.gz'
+    threads:
+        1
+    resources:
+        mem_mb=20000
+    params:
+        time="30:00:00"
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            python3 {cisvar}/cisVar.py mpileup -F {name}.{wildcards.sample} \\
+            -f {input.fasta} -p {input.bed} -B {input.bam}
+            """
+        )
+
+
+rule post:
+    input:
+        mpileup='{name}.{sample}.mpileup.txt.gz',
+        geno=ancient('{name}.{sample}.genotypes.txt.gz')
+    output:
+        '{name}.{sample}.{depth}.POSTth.txt',
+        '{name}.{sample}.{depth}.POST.txt',
+        '{name}.{sample}.{depth}.bed'
+    threads:
+        1
+    resources:
+        mem_mb=32000
+    params:
+        time="24:00:00"
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            python3 {cisvar}/cisVar.py post \\
+            -F {name}.{wildcards.sample} -r {read_depth}
+            """
+        )
+
+
+rule genos:
+    input:
+        post='{name}.{sample}.{depth}.POSTth.txt',
+        geno="{name}.{sample}.genotypes.txt.gz",
+        inds='{name}.{sample}.individuals.txt.gz'
+    output:
+        '{name}.{sample}.{depth}.genotypes.txt'
+    threads:
+        1
+    resources:
+        mem_mb=26000
+    params:
+        time="24:00:00"
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            python3 {cisvar}/cisVar.py geno \\
+            -F {name}.{wildcards.sample} -r {read_depth} -i {input.inds} \\
+            -g {input.geno}
+            """
+        )
+
+
+rule regression:
+    input:
+        post='{name}.{sample}.{depth}.POSTth.txt',
+        geno='{name}.{sample}.{depth}.genotypes.txt',
+        inds='{name}.{sample}.individuals.txt.gz'
+    output:
+        '{name}.{sample}.{depth}.total.txt',
+        '{name}.{sample}.{depth}.nonsigLD',
+        '{name}.{sample}.{depth}.sigLD'
+    threads:
+        1
+    resources:
+        mem_mb=26000
+    params:
+        time="20:00:00"
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            {R_prep}
+            python3 {cisvar}/cisVar.py qtls \\
+            -F {name}.{wildcards.sample} -r {read_depth} \\
+            -n `zcat {input.inds} | wc -l | awk '{{print $1}}'`
+            """
+        )
+
+
+rule tidy:
+    input:
+        reg='{name}.{sample}.{depth}.total.txt',
+        bed='{name}.{sample}.locations.bed.gz'
+    output:
+        txt='{name}.{sample}.{depth}.regression.txt',
+        pd='{name}.{sample}.{depth}.regression.pd'
+    threads:
+        1
+    resources:
+        mem_mb=30000
+    params:
+        time="06:00:00"
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            python3 {cisvar}/cisVar.py tidy \\
+            -F {name}.{wildcards.sample} -r {read_depth} \\
+            -b {input.bed} -t {output.txt} -p {output.pd}
+            """
+        )
+
+
+rule plot:
+    input:
+        reg='{name}.{sample}.{depth}.total.txt'
+    output:
+        '{name}.{sample}.{depth}.total.txt.prepost.png'
+    threads:
+        1
+    resources:
+        mem_mb=5000
+    params:
+        time="10:00:00"
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            {R_prep}
+            Rscript {cisvar}/scripts/plot_fun.R {input.reg}
+            """
+        )
