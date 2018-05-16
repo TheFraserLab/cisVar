@@ -134,7 +134,7 @@ def merge_dataframe(df, column_name='population'):
         'chrom', 'position', 'rsid', 'fishers_p', 'ref', 'alt', 'open_best',
         'closed_best', 'pop_count', column_name, 'pops_agree',
         'most_pops_agree', 'all_open_closed', 'open_closed_freqs',
-        'fishers_values', 'pre_freq', 'post_freq', 'pre_variance',
+        'fishers_value', 'pre_freq', 'post_freq', 'pre_variance',
         'post_variance', 'beta', 'z_value', 'depth', 'ref_depth', 'alt_depth',
         'snp_postfreq', 'snp_prefreq'
     ]
