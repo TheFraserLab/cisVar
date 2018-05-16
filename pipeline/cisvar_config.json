@@ -1,15 +1,17 @@
 {
     "name": "cis_var",
     "read_depth": 20,
-    "bams": "../{sample}_remap_hg19.bwt2pairs.merged.sorted.bam",
-    "samples": ["merged_reads"],
-    "cisvar": "$HOME/code/cisVar",
-    "vcfs": "/godot/quertermous/PooledHiChip/genotype/67total/*.vcf.comm.gz",
+    "samples": ["<a list or dict of samples, can also be a path to a json file>"],
+    "max_cores": 16,
+    "sort_vcfs": 1,
+    "chrom_format": "chr",
+    "bams": "<bams:path to bams with location specified: $HOME/bams/{sample}.bam>",
+    "cisvar": "<path to cisVar code: $HOME/code/cisVar>",
+    "vcfs": "<str,list,or glob of vcfs, e.g.: /data/PooledHiChip/genotypes/*.vcf.comm.gz>",
     "genome_fa": "/godot/genomes/human/hg19/hg19.fa",
+    "_comment": "The following three are file descriptors and must contain {sample}, if they don't exist they are ignored.",
+    "_comment2": "It's a really good idea to include at least the individuals file.",
     "alleles": "{sample}.alleles.txt.gz",
     "locs": "{sample}.locations.bed.gz",
-    "inds": "{sample}.individuals.txt.gz",
-    "max_cores": 16,
-    "chrom_format": "chr",
-    "sort_vcfs": 1
+    "inds": "{sample}.individuals.txt.gz"
 }

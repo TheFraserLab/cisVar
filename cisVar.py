@@ -9,7 +9,7 @@ Stanford University
 
 Version: 2.0.0b1
 Created: 2015-12-12
-Updated: 2018-05-04
+Updated: 2018-05-16
 
 Example usage:
 cisVar prep -F test_new -i individuals.txt.gz --chrom-format chr
@@ -1266,7 +1266,7 @@ def main():
     # Subcommands
     modes = parser.add_subparsers(
         dest='inputCommand',
-        metavar='{mpileup,post,geno,qtls}'
+        metavar='{prep,mpileup,post,geno,qtls,tidy}'
     )
 
     # Shared commands

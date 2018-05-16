@@ -31,6 +31,15 @@ samples = config['samples']
 if isinstance(samples, str) and os.path.isfile(config['samples']):
     with open(config['samples']) as fin:
         samples = json.load(fin)
+# Allow samples to map to the same individual and genotype files
+# in a group.
+if isinstance(samples, dict):
+    groups = samples
+    samples = list(samples.keys())
+elif isinstance(samples, list):
+    groups = {i: i for i in samples}
+else:
+    raise ValueError('samples must be a list or dict')
 
 # Read depth
 read_depth = config['read_depth']
@@ -183,7 +192,7 @@ rule prep_full:
         dedent(
             """\
             {script_prep}
-            python3 {cisvar}/cisVar.py mpileup -F {name}.{wildcards.sample} \\
+            python3 {cisvar}/cisVar.py prep -F {name}.{wildcards.sample} \\
             -a {input.alls} -i {input.inds} -l {input.locs} \\
             --chrom-format {params.chrom_fmt} -c {threads} {input.vcfs}
             """
@@ -209,7 +218,7 @@ rule prep_no_alleles:
         dedent(
             """\
             {script_prep}
-            python3 {cisvar}/cisVar.py mpileup -F {name}.{wildcards.sample} \\
+            python3 {cisvar}/cisVar.py prep -F {name}.{wildcards.sample} \\
             -i {input.inds} -l {input.locs} \\
             --chrom-format {params.chrom_fmt} -c {threads} {input.vcfs}
             """
