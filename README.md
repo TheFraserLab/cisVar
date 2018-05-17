@@ -17,6 +17,8 @@ This code was written by Ashley Tehranchi with minor modifications by Mike
 Dacre. It was produced at Stanford University, but is released here under the
 MIT license.
 
+Current version: 2.0.0b2
+
 ## Overview
 
 `cisVar.py` is the pipeline written in python3 and uses `regression_qtls.R`
@@ -34,6 +36,39 @@ Snakemake section below.
 Right now the default minor allele frequency filter is `0.1>MAF<0.99`.
 To change these and other regression constants, edit the `regressions_qtls.R`
 script.
+
+## Installation
+
+Install via PyPI:
+
+```shell
+pip install cisVar
+```
+
+Or install from github:
+
+```shell
+pip install https://github.com/TheFraserLab/cisVar/tarball/master
+```
+
+Alternatively, you can just clone the repo and use it directly from there.
+
+```shell
+git clone https://github.com/TheFraserLab/cisVar.git
+```
+
+It should work with python 2 or 3, but python 3 is highly recommended.
+
+
+### Prereqs
+
+Requires `samtools v1.9` and `bedtools v2.26.0` as well as the following python
+modules (installed automatically by pip):
+
+`pandas`, `numpy`, `psutil`, `snakemake`, `wget`
+
+Additionally requires that `R` with `Rscript` are installed, with the `ggplot2`
+module installed.
 
 ## Usage
 
@@ -74,19 +109,25 @@ A readDepth of 20 is generally optimal, the sample name can be whatever you
 want, but should be unique per sample. `{sample}` is a placeholder to allow any
 number of samples to be combined in the last step.
 
-Requires `samtools v1.9<` and `bedtools v2.26.0<`.
 
 ### Snakemake
 
 The above pipeline can be automated with
 [Snakemake](https://snakemake.readthedocs.io/en/stable/).
 
-To use, copy the `Snakefile` and `cisvar_config.json` file to the root of your
-project location. Then edit the `cisvar_config.json` file to match your needs.
+To use, install cisVar, navigate to the root of your project, and run `cisVar.py
+get_snake` to copy the Snakefile and config file over . Then edit the
+`cisvar_config.json` file to match your needs.
+
+You will also need to edit the `Snakefile` to set the `script_prep` string to
+match what is needed by your system.
+
+The following are the config options for that file:
 
 | Option       | Description                                                                                                                                                                                                   |
 |--------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | name         | A general name for this run, file prefix will be <name>.<sample>.<read_depth>                                                                                                                                 |
+| sample_name  | The name of the sample, default is population. Used only in the combination of multiple samples.                                                                                                              |
 | samples      | A list of samples, can just be a list, or a dictionary of {sample:group}, the 'group' in this case allows the use of the same genotype files for multiple samples, can also be a path to a separate json file |
 | read_depth   | An integer depth to require for each SNP to be considered                                                                                                                                                     |
 | max_cores    | Used only when parsing VCFs, if you have multiple VCF files (e.g. per chromosome), they will be parsed in parallel up to this many cores (or max avaialable on machine)                                       |
@@ -96,9 +137,40 @@ project location. Then edit the `cisvar_config.json` file to match your needs.
 | cisVar       | Path to the cisVar repository                                                                                                                                                                                 |
 | vcfs         | Can be a single path (for one vcf), a list of vcfs, or a glob string (e.g. `/path/to/vcfs/*.vcf.comm.gz`)                                                                                                     |
 | genome_fa    | Path to a FastA file of the genome you mapped to, single file only.                                                                                                                                           |
-| inds         | Optional: used to filter VCFs so that the genotype files contain only the individuals in the sample, e.g. `/path/to/inds/{sample.ind.txt.gz}`. Newline separated file of individuals.                         |
+| inds         | Optional: used to filter VCFs so that the genotype files contain only the individuals in the sample, e.g. `/path/to/inds/{sample}.ind.txt.gz`. Newline separated file of individuals.                         |
 | locs         | Optional: a BED/VCF/text file of SNP locations to consider, used to limit the total to be a subset of the genotype file.                                                                                      |
 | alleles      | Optional: a BED/VCF/text file of alternate ref/alt alleles. Must be a subset of the genotype VCFs. If there is an entry in this file, it's ref/alt alleles will be used instead of those in the genotype file |
+
+Note the last three files are optional, also if `samples` is a dict, then the
+value will be used in place of the sample. For example, if you have two samples
+for the same population that are `yri1` and `yri2`, but they both use the same
+genotype file `yri.geno.vcf`, you can make samples `{'yri1': 'yri', 'yri2':
+'yri'}` and then `yri` will be used to pick the ind, loc, and allele files
+
+
+#### Cluster
+
+To run on a cluster, run `cisVar.py get_snake` with `-x` and edit the
+`cluster.json` file to match your cluster environment, then run e.g.:
+
+```shell
+snakemake -j 100 --cluster-config cluster.json --cluster sbatch -n {threads} \
+-t {params.time} --mem={resources.mem_mb} -p {cluster.queue} \
+-o {cluster.out} -e {cluster.err}
+```
+
+or
+
+```shell
+snakemake -j 100 --cluster-config cluster.json --cluster qsub \
+-l nodes=1:ppn={threads} -l walltime={params.time} -l mem={resources.mem_mb} \
+-o {cluster.out} -e {cluster.err}
+```
+
+To set the maximum allowed memory per job, add the argument
+`--resources mem_mb=32000`.
+
+To also combine files, add `combine` to the end of the command.
 
 
 ## Script help
@@ -109,7 +181,7 @@ are run by the above snakemake pipeline.
 ### cisVar.py
 
 ```
-usage: cisVar.py [-h] {prep,mpileup,post,geno,qtls,tidy} ...
+usage: cisVar.py [-h] {prep,mpileup,post,geno,qtls,tidy,get_snake} ...
 
 cisVar: Find cis QTLs based on an experimental selection method
 
@@ -330,6 +402,21 @@ outputs:
                         Parsed output
   -p PANDASFILE, --pandasfile PANDASFILE
                         Parsed dataframe
+```
+
+#### get_snake
+
+This option just downloads the Snakefile and config files from this repo, for
+easy access when code is installed via pip.
+
+```
+usage: cisVar.py get_snake [-h] [-x]
+
+Download Snakefile and config to current dir
+
+optional arguments:
+  -h, --help   show this help message and exit
+  -x, --extra  Get additional sample and cluster configs
 ```
 
 ### combine.py
