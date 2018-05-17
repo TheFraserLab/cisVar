@@ -8,12 +8,42 @@ import os
 import json
 from glob import glob
 from textwrap import dedent
+from subprocess import check_output
 
 import wget
 
-#######################################################################
-#                              Edit Here                              #
-#######################################################################
+###############################################################################
+#                             Pre-Defined Scripts                             #
+###############################################################################
+
+# For use with modules
+module = dedent(
+    """\
+    module () {
+        eval $($LMOD_CMD bash "$@")
+        [ $? = 0 ] && eval $(${LMOD_SETTARG_CMD:-:} -s sh)
+    }"""
+)
+
+# At the start of all scripts
+script_prep = dedent(
+    """\
+    {module}
+    module load fraserconda
+    """
+).format(module=module)
+
+# After script prep for R based rules
+R_prep = dedent(
+    """\
+    module load R
+    """
+)
+
+###############################################################################
+#                               Editable Config                               #
+###############################################################################
+
 
 # Pick a config for your environment
 configfile: "cisvar_config.json"
@@ -21,16 +51,37 @@ configfile: "cisvar_config.json"
 # Name for this run
 name = config['name']
 
-# Software locations
-cisvar = os.path.expandvars(config['cisvar'])  # https://github.com/TheFraserLab/cisVar
+# Read depth
+read_depth = config['read_depth']
 
-# Samples, either a list or a dictionary, dictionary allows sample: group, where group
-# is used for genotype and individuals files
+# Software locations
+cisvar_folder = os.path.expandvars(config['cisvar'])  # https://github.com/TheFraserLab/cisVar
+if os.path.isdir(cisvar_folder):
+    cisvar  = cisvar_folder
+    scripts = os.path.join(cisvar_folder, 'scripts')
+else:
+    res = check_output(['command', '-V', 'cisVar'])
+    if 'not found' in res:
+        raise ValueError('Cannot find cisVar code')
+    cisvar  = os.path.dirname(res.split(' ')[-1])
+    scripts = cisvar
+
+#
+###############################################################################
+#                    Should Not Need To Edit Below Here                       #
+###############################################################################
+
+
+# Samples, either a list or a dictionary, dictionary allows sample: group,
+# where group is used for genotype and individuals files
 # Can be a separate json file
 samples = config['samples']
-if isinstance(samples, str) and os.path.isfile(config['samples']):
-    with open(config['samples']) as fin:
-        samples = json.load(fin)
+if isinstance(samples, str):
+    if os.path.isfile(config['samples']):
+        with open(config['samples']) as fin:
+            samples = json.load(fin)
+    else:
+        raise OSError('Could not find samples file: {}'.format(samples))
 # Allow samples to map to the same individual and genotype files
 # in a group.
 if isinstance(samples, dict):
@@ -39,10 +90,9 @@ if isinstance(samples, dict):
 elif isinstance(samples, list):
     groups = {i: i for i in samples}
 else:
+    print(samples)
     raise ValueError('samples must be a list or dict')
-
-# Read depth
-read_depth = config['read_depth']
+group_set = set(groups.values())
 
 # Note, none of the below files are required, if they don't match anything,
 # they are ignored. They can include {sample} inside the string.
@@ -87,34 +137,6 @@ cores = cores if cores <= max_cores else max_cores
 
 
 ###############################################################################
-#                             Pre-Defined Scripts                             #
-###############################################################################
-
-# For use with modules
-module = dedent(
-    """\
-    module () {
-        eval $($LMOD_CMD bash "$@")
-        [ $? = 0 ] && eval $(${LMOD_SETTARG_CMD:-:} -s sh)
-    }"""
-)
-
-# At the start of all scripts
-script_prep = dedent(
-    """\
-    {module}
-    module load fraserconda
-    """
-).format(module=module)
-
-# After script prep for R based rules
-R_prep = dedent(
-    """\
-    module load R
-    """
-)
-
-###############################################################################
 #                                   Targets                                   #
 ###############################################################################
 
@@ -124,13 +146,14 @@ wildcard_constraints:
     depth="[^\.]+",
     pop="[^\.]+"
 
-localrules: all, get_cisVar, genotypes
+localrules: all, combine, genotypes
 
 
 # Make various inputs optional, only for prep step
 ruleorder: prep_full > prep_no_alleles > prep_no_locs
 
 
+# Run everything except combination, default pipeline
 rule all:
     input:
         expand(
@@ -157,12 +180,62 @@ rule all:
         time="48:00:00"
 
 
-rule genotypes:
+# Also combine samples at the end
+rule combine:
     input:
+        expand(
+            '{name}.{sample}.{depth}.regression.txt',
+            name=name, sample=samples, depth=read_depth
+        ),
+        expand(
+            '{name}.{sample}.{depth}.total.txt.prepost.png',
+            name=name, sample=samples, depth=read_depth
+        ),
+        expand(
+            '{name}.{sample}.{depth}.regression.pd',
+            name=name, sample=samples, depth=read_depth
+        ),
         expand(
             '{name}.{sample}.{depth}.genotypes.txt',
             name=name, sample=samples, depth=read_depth
+        ),
+        expand(
+            '{name}.combined.{depth}.regression.pd',
+            name=name, depth=read_depth
+        ),
+        expand(
+            '{name}.merged.{depth}.regression.pd',
+            name=name, depth=read_depth
         )
+    threads:
+        1
+    resources:
+        mem_mb=500
+    params:
+        time="48:00:00"
+
+
+# Do preparation only
+rule prep:
+    input:
+        expand(
+            '{name}.{group}.genotypes.txt.gz',
+            name=name, group=group_set
+        ),
+        expand(
+            '{name}.{group}.individuals.txt.gz',
+            name=name, group=group_set
+        ),
+        expand(
+            '{name}.{group}.genotypes.txt.gz',
+            name=name, group=group_set
+        )
+    threads:
+        1
+    resources:
+        mem_mb=500
+    params:
+        time="48:00:00"
 
 
 ###############################################################################
@@ -178,9 +251,9 @@ rule prep_full:
         locs=ancient(locs),
         inds=ancient(inds)
     output:
-        '{name}.{sample}.genotypes.txt.gz',
-        '{name}.{sample}.individuals.txt.gz',
-        '{name}.{sample}.locations.bed.gz'
+        '{name}.{group}.genotypes.txt.gz',
+        '{name}.{group}.individuals.txt.gz',
+        '{name}.{group}.locations.bed.gz'
     threads:
         cores
     resources:
@@ -192,7 +265,7 @@ rule prep_full:
         dedent(
             """\
             {script_prep}
-            python3 {cisvar}/cisVar.py prep -F {name}.{wildcards.sample} \\
+            python3 {cisvar}/cisVar.py prep -F {name}.{wildcards.group} \\
             -a {input.alls} -i {input.inds} -l {input.locs} \\
             --chrom-format {params.chrom_fmt} -c {threads} {input.vcfs}
             """
@@ -204,9 +277,9 @@ rule prep_no_alleles:
         locs=ancient(locs),
         inds=ancient(inds)
     output:
-        '{name}.{sample}.genotypes.txt.gz',
-        '{name}.{sample}.individuals.txt.gz',
-        '{name}.{sample}.locations.bed.gz'
+        '{name}.{group}.genotypes.txt.gz',
+        '{name}.{group}.individuals.txt.gz',
+        '{name}.{group}.locations.bed.gz'
     threads:
         cores
     resources:
@@ -218,7 +291,7 @@ rule prep_no_alleles:
         dedent(
             """\
             {script_prep}
-            python3 {cisvar}/cisVar.py prep -F {name}.{wildcards.sample} \\
+            python3 {cisvar}/cisVar.py prep -F {name}.{wildcards.group} \\
             -i {input.inds} -l {input.locs} \\
             --chrom-format {params.chrom_fmt} -c {threads} {input.vcfs}
             """
@@ -229,9 +302,9 @@ rule prep_no_locs:
         vcfs=ancient(vcfs),
         inds=ancient(inds)
     output:
-        '{name}.{sample}.genotypes.txt.gz',
-        '{name}.{sample}.individuals.txt.gz',
-        '{name}.{sample}.locations.bed.gz'
+        '{name}.{group}.genotypes.txt.gz',
+        '{name}.{group}.individuals.txt.gz',
+        '{name}.{group}.locations.bed.gz'
     threads:
         cores
     resources:
@@ -243,7 +316,7 @@ rule prep_no_locs:
         dedent(
             """\
             {script_prep}
-            python3 {cisvar}/cisVar.py prep -F {name}.{wildcards.sample} \\
+            python3 {cisvar}/cisVar.py prep -F {name}.{wildcards.group} \\
             -i {input.inds} \\
             --chrom-format {params.chrom_fmt} -c {threads} {input.vcfs}
             """
@@ -253,7 +326,9 @@ rule prep_no_locs:
 rule mpileup:
     input:
         bam=ancient(config['bams']),  # Must have {sample} in the json
-        bed='{name}.{sample}.locations.bed.gz',
+        bed=lambda x: '{name}.{group}.locations.bed.gz'.format(
+            name=name, group=groups[x.sample]
+        ),
         fasta=ancient(os.path.expandvars(config['genome_fa']))
     output:
         '{name}.{sample}.mpileup.txt.gz'
@@ -276,7 +351,9 @@ rule mpileup:
 rule post:
     input:
         mpileup='{name}.{sample}.mpileup.txt.gz',
-        geno=ancient('{name}.{sample}.genotypes.txt.gz')
+        geno=lambda x: '{name}.{group}.genotypes.txt.gz'.format(
+            name=name, group=groups[x.sample]
+        )
     output:
         '{name}.{sample}.{depth}.POSTth.txt',
         '{name}.{sample}.{depth}.POST.txt',
@@ -292,7 +369,8 @@ rule post:
             """\
             {script_prep}
             python3 {cisvar}/cisVar.py post \\
-            -F {name}.{wildcards.sample} -r {read_depth}
+            -F {name}.{wildcards.sample} -r {read_depth} \\
+            -a {input.geno}
             """
         )
 
@@ -300,8 +378,12 @@ rule post:
 rule genos:
     input:
         post='{name}.{sample}.{depth}.POSTth.txt',
-        geno="{name}.{sample}.genotypes.txt.gz",
-        inds='{name}.{sample}.individuals.txt.gz'
+        geno=lambda x: "{name}.{group}.genotypes.txt.gz".format(
+            name=name, group=groups[x.sample]
+        ),
+        inds=lambda x: '{name}.{group}.individuals.txt.gz'.format(
+            name=name, group=groups[x.sample]
+        )
     output:
         '{name}.{sample}.{depth}.genotypes.txt'
     threads:
@@ -325,7 +407,9 @@ rule regression:
     input:
         post='{name}.{sample}.{depth}.POSTth.txt',
         geno='{name}.{sample}.{depth}.genotypes.txt',
-        inds='{name}.{sample}.individuals.txt.gz'
+        inds=lambda x: '{name}.{group}.individuals.txt.gz'.format(
+            name=name, group=groups[x.sample]
+        )
     output:
         '{name}.{sample}.{depth}.total.txt',
         '{name}.{sample}.{depth}.nonsigLD',
@@ -351,7 +435,9 @@ rule regression:
 rule tidy:
     input:
         reg='{name}.{sample}.{depth}.total.txt',
-        bed='{name}.{sample}.locations.bed.gz'
+        bed=lambda x: '{name}.{group}.locations.bed.gz'.format(
+            name=name, group=groups[x.sample]
+        )
     output:
         txt='{name}.{sample}.{depth}.regression.txt',
         pd='{name}.{sample}.{depth}.regression.pd'
@@ -388,6 +474,40 @@ rule plot:
             """\
             {script_prep}
             {R_prep}
-            Rscript {cisvar}/scripts/plot_fun.R {input.reg}
+            Rscript {scripts}/plot_fun.R {input.reg}
+            """
+        )
+
+rule combine_dfs:
+    input:
+        expand(
+            '{name}.{sample}.{depth}.regression.pd',
+            name=name, sample=samples, depth=read_depth
+        )
+    output:
+        expand(
+            '{name}.combined.{depth}.regression.pd',
+            name=name, depth=read_depth
+        ),
+        expand(
+            '{name}.merged.{depth}.regression.pd',
+            name=name, depth=read_depth
+        )
+    threads:
+        1
+    resources:
+        mem_mb=15000
+    params:
+        time="10:00:00",
+        col_name=config['sample_name'],
+        search_str=expand(
+            '{name}.{{sample}}.{depth}.regression.pd',
+            name=name, depth=read_depth
+        )
+    shell:
+        dedent(
+            """\
+            {script_prep}
+            python3 {scripts}/combine.py -c {params.col_name} {params.search_str}
             """
         )

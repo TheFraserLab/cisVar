@@ -1,0 +1,9 @@
+{
+    "__default__" :
+    {
+        "queue" : "<your_batch_queue>",
+        "name"  : "cisvar.{rule}.{wildcards}",
+        "out"   : "logs/{rule}.{wildcards}.%j.out",
+        "err"   : "logs/{rule}.{wildcards}.%j.err"
+    }
+}

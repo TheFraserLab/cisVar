@@ -1,17 +1,18 @@
 {
     "name": "cis_var",
-    "read_depth": 20,
+    "sample_name": "population",
     "samples": ["<a list or dict of samples, can also be a path to a json file>"],
+    "read_depth": 20,
     "max_cores": 16,
     "sort_vcfs": 1,
     "chrom_format": "chr",
     "bams": "<bams:path to bams with location specified: $HOME/bams/{sample}.bam>",
-    "cisvar": "<path to cisVar code: $HOME/code/cisVar>",
-    "vcfs": "<str,list,or glob of vcfs, e.g.: /data/PooledHiChip/genotypes/*.vcf.comm.gz>",
-    "genome_fa": "/godot/genomes/human/hg19/hg19.fa",
-    "_comment": "The following three are file descriptors and must contain {sample}, if they don't exist they are ignored.",
+    "cisvar": "<path to cisVar code (not required if installed on path): $HOME/code/cisVar>",
+    "vcfs": "<str,list,or glob of vcfs, e.g.: /data/1000genomes/1000GP_Phase3/*ALL.chr*vcf.gz>",
+    "genome_fa": "/data/genomes/human/hg19/hg19.fa",
+    "_comment": "The following three are file descriptors and must contain {group} (same as sample if samples is a list), if they don't exist they are ignored.",
     "_comment2": "It's a really good idea to include at least the individuals file.",
-    "alleles": "{sample}.alleles.txt.gz",
-    "locs": "{sample}.locations.bed.gz",
-    "inds": "{sample}.individuals.txt.gz"
+    "alleles": "none..{group}.alleles.txt.gz <e.g. won't be used as doesn't exist>",
+    "locs": "{group}.locations.bed.gz",
+    "inds": "{group}.individuals.txt.gz"
 }
