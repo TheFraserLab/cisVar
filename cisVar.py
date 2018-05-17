@@ -49,6 +49,8 @@ except ImportError:
 
 CORES = mp.cpu_count()
 
+__version__ = '2.0.0b2'
+
 ###########################################################################
 #                 Create Necessary Input Files from VCFs                  #
 ###########################################################################
@@ -1256,8 +1258,11 @@ def parse_gt(gt):
 ###########################################################################
 
 
-def main():
-    """Run as a script."""
+def main(argv=None):
+    """Run as a script, parse command line args."""
+    if not argv:
+        argv = sys.argv[1:]
+
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1266,7 +1271,7 @@ def main():
     # Subcommands
     modes = parser.add_subparsers(
         dest='inputCommand',
-        metavar='{prep,mpileup,post,geno,qtls,tidy}'
+        metavar='{prep,mpileup,post,geno,qtls,tidy,get_snake}'
     )
 
     # Shared commands
@@ -1404,7 +1409,17 @@ def main():
     outputs.add_argument('-t', '--textfile', help="Parsed output")
     outputs.add_argument('-p', '--pandasfile', help="Parsed dataframe")
 
-    args = parser.parse_args()
+    # Download pipeline
+    snk = modes.add_parser(
+        'get_snake',
+        description="Download Snakefile and config to current dir",
+        help="Download Snakefile and config", aliases=['download'],
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    snk.add_argument('-x', '--extra', action='store_true',
+                     help='Get additional sample and cluster configs')
+
+    args = parser.parse_args(argv)
 
     if args.inputCommand in ['prep']:
         if args.chrom_format == 'ignore':
@@ -1458,6 +1473,26 @@ def main():
                 bedfile = bfl
         parse_regression(
             ifl, textfile=ofl, pandasfile=pfl, bed=bedfile
+        )
+
+    elif args.inputCommand in ['get_snake', 'download']:
+        try:
+            from wget import download
+        except ImportError:
+            sys.stderr.write(
+                'Cannot get files with wget installed, '
+                'try pip install --user wget\n'
+            )
+            return 1
+        url = 'https://raw.githubusercontent.com/TheFraserLab/cisVar/master/pipeline/{0}'
+        files = ['Snakefile', 'cisvar_config.json']
+        if args.extra:
+            files += ['cisvar_samples.json', 'cluster.json']
+        for fl in files:
+            download(url.format(fl))
+        print(
+            'Done, edit cisvar_config.json for your needs, use README on '
+            'github repo for help'
         )
 
     else:
